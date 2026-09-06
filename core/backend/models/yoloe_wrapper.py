@@ -5,7 +5,7 @@ from ultralytics import YOLO
 from ultralytics.models.yolo.yoloe import YOLOEVPSegPredictor
 from .base import ModelInterface
 from .registry import register_model
-from ..utils import _cleanup_runs
+from ..utils import _cleanup_runs, _ultralytics_runs_dir
 
 @register_model("yoloe-26x", img_size=640, weight_path_key="yoloe_26x_path", category="yoloe26", role="example")
 @register_model("yoloe-26n", img_size=640, weight_path_key="yoloe_26n_path", category="yoloe26", role="example")
@@ -53,14 +53,20 @@ class YOLOEWrapper(ModelInterface):
                 verbose=False,
                 imgsz=img_size,
                 visual_prompts=prompts_dict,
-                predictor=YOLOEVPSegPredictor
+                predictor=YOLOEVPSegPredictor,
+                project=_ultralytics_runs_dir(),
+                name="predict",
+                exist_ok=True
             )
         else:
             results = self.model.predict(
                 source=image,
                 save=False,
                 verbose=False,
-                imgsz=img_size
+                imgsz=img_size,
+                project=_ultralytics_runs_dir(),
+                name="predict",
+                exist_ok=True
             )
         _cleanup_runs()
         return results

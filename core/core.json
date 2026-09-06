@@ -881,7 +881,7 @@
   },
   {
     "key": "output_dir",
-    "value": "d:\\PycharmProjects\\Work\\VisionLeeQT\\projects\\test_agent_fixture"
+    "value": "D:\\PycharmProjects\\Work\\VisionLeeQT\\projects\\test_agent_fixture"
   },
   {
     "key": "last_idx_1084ce65",
@@ -889,7 +889,7 @@
   },
   {
     "key": "last_opened_dir",
-    "value": "d:\\PycharmProjects\\Work\\VisionLeeQT\\projects\\test_agent_fixture"
+    "value": "D:\\PycharmProjects\\Work\\VisionLeeQT\\projects\\test_agent_fixture"
   },
   {
     "key": "ai_api_key",
@@ -955,7 +955,7 @@
   },
   {
     "key": "intent_analysis_enabled",
-    "value": "关闭"
+    "value": "打开"
   },
   {
     "key": "intent_analysis_cooldown",
@@ -1019,5 +1019,9 @@
   {
     "key": "plain_model",
     "value": "yolo26s"
+  },
+  {
+    "key": "last_idx_7d099e46",
+    "value": 75
   }
 ]

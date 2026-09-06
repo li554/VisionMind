@@ -11,7 +11,7 @@ from typing import List, Any, Optional
 from ultralytics import YOLO
 
 from .base import ModelInterface, MockBoxes, MockMasks, MockResults
-from ..utils import _cleanup_runs
+from ..utils import _ultralytics_runs_dir
 
 
 class YOLOTrainedWrapper(ModelInterface):
@@ -107,7 +107,10 @@ class YOLOTrainedWrapper(ModelInterface):
                 iou=iou,
                 imgsz=img_size,
                 verbose=False,
-                save=False
+                save=False,
+                project=_ultralytics_runs_dir(),
+                name="predict",
+                exist_ok=True
             )
 
             print(f"[YOLOTrainedWrapper] 原始结果数量: {len(results)}")

@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+import tempfile
 from typing import List, Dict, Any, Tuple, Optional
 
 import cv2
@@ -47,11 +48,14 @@ def imwrite_unicode(path: str, image: np.ndarray, params: list = None) -> bool:
         return False
 
 def _cleanup_runs():
-    """清理临时推理文件"""
-    from .path_resolver import _PROJECT_ROOT
-    runs_dir = os.path.join(_PROJECT_ROOT, "runs")
+    """清理临时推理文件（系统临时目录中 Ultralytics 的 runs 输出）"""
+    runs_dir = _ultralytics_runs_dir()
     if os.path.exists(runs_dir):
         shutil.rmtree(runs_dir, ignore_errors=True)
+
+def _ultralytics_runs_dir():
+    """Ultralytics predict 的输出目录：置于系统临时目录，避免污染项目目录。"""
+    return os.path.join(tempfile.gettempdir(), "visionmind_ultralytics_runs")
 
 def download_file(url, save_path):
     """下载文件并显示进度条"""
