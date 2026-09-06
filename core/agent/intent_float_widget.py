@@ -225,22 +225,6 @@ class IntentFloatWidget(QFrame):
         b.setContentsMargins(12, 10, 12, 10)
         b.setSpacing(8)
 
-        self._intent_badge = QFrame()
-        self._intent_badge.setObjectName("IntentBadge")
-        self._intent_badge.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        badge_l = QHBoxLayout(self._intent_badge)
-        badge_l.setContentsMargins(10, 3, 10, 3)
-        badge_l.setSpacing(6)
-        self._badge_dot = QLabel("●")
-        self._badge_dot.setObjectName("IntentBadgeDot")
-        self._badge_dot.setFixedSize(8, 8)
-        self._badge_dot.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        badge_l.addWidget(self._badge_dot)
-        self._badge_text = QLabel("等待操作")
-        self._badge_text.setObjectName("IntentBadgeText")
-        badge_l.addWidget(self._badge_text)
-        b.addWidget(self._intent_badge, 0, Qt.AlignmentFlag.AlignLeft)
-
         self._desc_label = QLabel("")
         self._desc_label.setObjectName("IntentCardDesc")
         self._desc_label.setWordWrap(True)
@@ -398,13 +382,10 @@ class IntentFloatWidget(QFrame):
         desc = result.get("intent_description", "")
         suggestions = result.get("suggestions") or []
         self._pill_text.setText(intent)
-        self._badge_text.setText(intent)
         self._desc_label.setText(desc)
         self._set_suggestions(suggestions)
         state = "active" if suggestions else "idle"
         self._set_pill_state(state)
-        self._intent_badge.setProperty("state", state)
-        self._repolish(self._intent_badge)
         self._resize_to_fit()
         self._reposition_card()
 
@@ -425,21 +406,16 @@ class IntentFloatWidget(QFrame):
         self._clear_suggestions()
         if enabled:
             self._pill_text.setText("等待操作")
-            self._badge_text.setText("等待操作")
             self._desc_label.setText("")
             self._hint_label.setText("操作后将自动分析意图并给出建议")
             self._section_label.setText("执行建议")
             self._set_pill_state("idle")
-            self._intent_badge.setProperty("state", "idle")
         else:
             self._pill_text.setText("意图分析已关闭")
-            self._badge_text.setText("已关闭")
             self._desc_label.setText("")
             self._hint_label.setText("意图分析已关闭，操作不再被分析")
             self._section_label.setText("执行建议")
             self._set_pill_state("off")
-            self._intent_badge.setProperty("state", "off")
-        self._repolish(self._intent_badge)
         self._resize_to_fit()
         self._reposition_card()
 
@@ -538,28 +514,6 @@ class IntentFloatWidget(QFrame):
     #IntentCardBtn:hover { background: rgba(59, 130, 246, 0.16); color: #60a5fa; }
     #IntentCardBtn[active="true"] { color: #60a5fa; }
 
-    #IntentBadge { border-radius: 999px; }
-    #IntentBadge[state="active"] {
-        background-color: rgba(59, 130, 246, 0.16);
-        border: 1px solid rgba(59, 130, 246, 0.4);
-    }
-    #IntentBadge[state="active"] #IntentBadgeText,
-    #IntentBadge[state="active"] #IntentBadgeDot { color: #60a5fa; }
-    #IntentBadge[state="idle"] {
-        background-color: rgba(255, 255, 255, 0.06);
-        border: 1px solid rgba(255, 255, 255, 0.12);
-    }
-    #IntentBadge[state="idle"] #IntentBadgeText,
-    #IntentBadge[state="idle"] #IntentBadgeDot { color: #9aa3b2; }
-    #IntentBadge[state="off"] {
-        background-color: rgba(255, 255, 255, 0.05);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-    }
-    #IntentBadge[state="off"] #IntentBadgeText,
-    #IntentBadge[state="off"] #IntentBadgeDot { color: #6b7280; }
-    #IntentBadgeDot { font-size: 5px; }
-    #IntentBadgeText { font-size: 12px; font-weight: 600; }
-
     #IntentCardDesc { color: #9aa3b2; font-size: 12px; }
     #IntentSectionLabel { color: #6b7280; font-size: 11px; font-weight: 600; }
     #IntentSugItem {
@@ -649,28 +603,6 @@ class IntentFloatWidget(QFrame):
     }
     #IntentCardBtn:hover { background: rgba(37, 99, 235, 0.1); color: #2563eb; }
     #IntentCardBtn[active="true"] { color: #2563eb; }
-
-    #IntentBadge { border-radius: 999px; }
-    #IntentBadge[state="active"] {
-        background-color: rgba(37, 99, 235, 0.08);
-        border: 1px solid rgba(37, 99, 235, 0.25);
-    }
-    #IntentBadge[state="active"] #IntentBadgeText,
-    #IntentBadge[state="active"] #IntentBadgeDot { color: #2563eb; }
-    #IntentBadge[state="idle"] {
-        background-color: rgba(0, 0, 0, 0.04);
-        border: 1px solid rgba(0, 0, 0, 0.1);
-    }
-    #IntentBadge[state="idle"] #IntentBadgeText,
-    #IntentBadge[state="idle"] #IntentBadgeDot { color: #4b5563; }
-    #IntentBadge[state="off"] {
-        background-color: rgba(0, 0, 0, 0.03);
-        border: 1px solid rgba(0, 0, 0, 0.08);
-    }
-    #IntentBadge[state="off"] #IntentBadgeText,
-    #IntentBadge[state="off"] #IntentBadgeDot { color: #9ca3af; }
-    #IntentBadgeDot { font-size: 5px; }
-    #IntentBadgeText { font-size: 12px; font-weight: 600; }
 
     #IntentCardDesc { color: #4b5563; font-size: 12px; }
     #IntentSectionLabel { color: #9ca3af; font-size: 11px; font-weight: 600; }

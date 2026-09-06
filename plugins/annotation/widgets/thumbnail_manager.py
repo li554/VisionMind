@@ -67,8 +67,11 @@ class ThumbnailManager(QObject):
 
     loaded = Signal(str, QPixmap)  # (文件路径, 缩略图 QPixmap)，主线程发出
 
-    def __init__(self, size: QSize = QSize(88, 88), max_workers: int = 2, parent=None):
+    def __init__(self, size: QSize = QSize(88, 88), max_workers: int = None, parent=None):
         super().__init__(parent)
+        # 默认按 CPU 核数合理分配解码线程（2 个太慢，几千张图会排队很久）
+        if max_workers is None:
+            max_workers = max(4, min(8, (os.cpu_count() or 4) + 2))
         self._size = QSize(size)
         self._pool = QThreadPool(self)
         self._pool.setMaxThreadCount(max_workers)

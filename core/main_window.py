@@ -175,7 +175,7 @@ class MainWindow(FramelessWindow):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle(Config.APP_NAME)
+        self.setWindowTitle(f"{Config.APP_NAME} v{Config.VERSION}")
         self.setMinimumSize(800, 600)
 
         self._init_icon()

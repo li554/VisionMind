@@ -994,6 +994,8 @@ class AnnotationInterface(Interface):
         self.file_list.setIconSize(QSize(44, 44))
         self._thumb_manager = ThumbnailManager(parent=self)
         self._thumb_manager.loaded.connect(self._on_thumbnail_loaded)
+        self._thumb_item_index = {}  # path -> QListWidgetItem，缩略图完成时 O(1) 定位
+        self.file_list.verticalScrollBar().valueChanged.connect(self._on_file_list_scrolled)
         self.sidebar_layout.addWidget(self.file_list)
         
         self.splitter.addWidget(self.sidebar)
@@ -1265,8 +1267,50 @@ class AnnotationInterface(Interface):
         return "success"
 
     def _populate_file_thumbnails(self):
-        """为文件列表请求缩略图；命中缓存即时设置，否则显示占位图标后台加载"""
+        """为文件列表请求缩略图（按可见行懒加载）。
+
+        列表重建时重建 path->item 索引；只对当前可见行发起缩略图请求，
+        命中缓存即时设置，其余显示占位图标，滚动时再动态加载。
+        """
+        placeholder = FIF.PHOTO.icon()
+        self._thumb_item_index = {}
+        first, last = self._visible_row_range()
         for i in range(self.file_list.count()):
+            item = self.file_list.item(i)
+            path = item.data(Qt.UserRole)
+            if not path:
+                continue
+            self._thumb_item_index[path] = item
+            # 只在可见行做缓存读取/请求，离屏行一律占位（滚动时再加载），
+            # 避免对几千张图逐个做磁盘 stat 阻塞主线程进入标注界面
+            if first <= i <= last:
+                cached = self._thumb_manager.get_cached(path)
+                if cached is not None:
+                    item.setIcon(QIcon(cached))
+                else:
+                    item.setIcon(placeholder)
+                    self._thumb_manager.request(path)
+            else:
+                item.setIcon(placeholder)
+
+    def _visible_row_range(self, margin: int = 2):
+        """计算当前可见行区间（含上下 margin 行，用于提前加载）。"""
+        count = self.file_list.count()
+        if count == 0:
+            return 0, -1
+        row_h = self.file_list.sizeHintForRow(0)
+        if row_h <= 0:
+            row_h = 52
+        value = self.file_list.verticalScrollBar().value()
+        vh = max(1, self.file_list.viewport().height())
+        first = max(0, value // row_h - margin)
+        last = min(count - 1, (value + vh) // row_h + margin)
+        return first, last
+
+    def _on_file_list_scrolled(self, value=None):
+        """滚动时动态加载进入视野的缩略图；命中缓存则立刻显示。"""
+        first, last = self._visible_row_range()
+        for i in range(first, last + 1):
             item = self.file_list.item(i)
             path = item.data(Qt.UserRole)
             if not path:
@@ -1275,17 +1319,15 @@ class AnnotationInterface(Interface):
             if cached is not None:
                 item.setIcon(QIcon(cached))
             else:
-                item.setIcon(FIF.PHOTO.icon())
+                # request 内部会做缓存与在途请求去重，重复调用安全
                 self._thumb_manager.request(path)
 
     @Slot(str, QPixmap)
     def _on_thumbnail_loaded(self, path: str, pixmap: QPixmap):
-        """缩略图加载完成：按路径匹配列表行设置图标（行已重建/不存在时忽略）"""
-        for i in range(self.file_list.count()):
-            item = self.file_list.item(i)
-            if item.data(Qt.UserRole) == path:
-                item.setIcon(QIcon(pixmap))
-                break
+        """缩略图加载完成：按 path 索引 O(1) 定位行设置图标（行已重建/不存在时忽略）"""
+        item = self._thumb_item_index.get(path)
+        if item is not None:
+            item.setIcon(QIcon(pixmap))
 
 
     def apply_persistent_settings(self):

@@ -9,7 +9,7 @@ class Config:
     
     # UI settings
     APP_NAME = "VisionMind"
-    VERSION = "2.4.0 Build 202310"
+    VERSION = "1.0.1"
     
     # Theme colors (matching the React frontend)
     PRIMARY_COLOR = "#2563eb"  # blue-600
