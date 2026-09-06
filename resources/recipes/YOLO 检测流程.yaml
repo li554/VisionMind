@@ -1,0 +1,37 @@
+recipe_name: YOLO 检测流程
+created_at: '2026-03-11T21:55:00'
+updated_at: '2026-03-11T21:55:00'
+nodes:
+  file_input:
+    type: FileInputNode
+    identifier: inputs
+    properties:
+      file_path: frontend/src/resource/app_image.png
+      loop: false
+      pos:
+        - -400
+        - 0
+  yolo_detect:
+    type: YOLODetectNode
+    identifier: detection
+    properties:
+      model_type: yolo11n
+      confidence: 50
+      iou_threshold: 45
+      pos:
+        - -100
+        - 0
+  result_display:
+    type: ResultDisplayNode
+    identifier: outputs
+    properties:
+      pos:
+        - 200
+        - 0
+connections:
+  - from: file_input.Image
+    to: yolo_detect.Image
+  - from: yolo_detect.Image
+    to: result_display.Image
+  - from: yolo_detect.Result
+    to: result_display.Result

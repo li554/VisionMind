@@ -1,0 +1,35 @@
+# VisionMind 依赖清单
+# 推荐环境: conda create -n visionmind python=3.10
+# 版本取自开发环境(sam3)实测, 标注版本号的为已验证组合
+# ------------------------------------------------------------------
+
+# ---------- 核心 UI ----------
+PySide6==6.10.2
+PySide6-Fluent-Widgets==1.11.1      # qfluentwidgets (Fluent Design)
+Markdown==3.10.2                    # Agent 侧栏消息渲染
+
+# ---------- AI / 图像处理 ----------
+numpy==1.26.0
+opencv-python==4.13.0.92
+torch>=2.0                          # 建议按官方指引安装 CUDA 版:
+                                    #   pip install torch --index-url https://download.pytorch.org/whl/cu121
+ultralytics==8.4.3                  # YOLO / SAM2 / SAM3 推理
+onnxruntime-gpu==1.25.0             # ONNX 模型推理; 纯 CPU 环境可替换为 onnxruntime
+tokenizers==0.22.2                  # SAM3 / trtsam 分词器
+
+# ---------- Agent 内核 (core/corecoder) ----------
+openai==2.28.0
+rich==15.0.0
+prompt_toolkit==3.0.52
+python-dotenv==1.2.2
+
+# ---------- 通用工具 ----------
+requests==2.34.2
+tqdm==4.67.3
+PyYAML==6.0.3
+
+# ---------- 可选依赖 (按需安装) ----------
+# litellm               # CoreCoder 非 OpenAI 兼容提供商后端
+# trtsam==0.3.0         # TensorRT 加速版 SAM (私有包, 未发布到公共 PyPI)
+# segment-anything==1.0 # SAM 官方参考包
+# segment-anything-hq   # HQ-SAM 高精度分割

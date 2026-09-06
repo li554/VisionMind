@@ -1,0 +1,628 @@
+/* ============================================================================
+   亮色主题样式 - 清新浅色主题
+   ============================================================================ */
+QWidget {
+    font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+}
+
+/* 主窗口背景 - VSCode 风格浅色 */
+#MainWindowCentral, #NavigationBar, #CustomStatusBar {
+    background-color: #f8f8f8 !important;
+}
+
+#stackedWidget, #stackedWidget > QWidget {
+    background-color: #fafafc !important;
+}
+
+/* 侧边栏与状态栏边框 */
+#CustomStatusBar { border-top: 1px solid #e0e0e0; }
+
+/* 标题栏下方与导航栏右侧的分隔线 */
+#TitleBarSeparator, #NavBarSeparator {
+    color: #e0e0e0;
+    background-color: #e0e0e0;
+    border: none;
+}
+
+/* ============================================================================
+   2. 界面通用背景 - 浅灰白色，更清新
+   ============================================================================ */
+#DashboardInterface, #VersionInterface, #AnnotationInterface, #AutoAnnotationInterface,
+#GenerationInterface, #TrainingInterface, #InferenceInterface, #KachiInterface, #UnsupervisedTrainingInterface, #FlowInterface,
+.Interface, .DashboardInterface, .VersionInterface, .AnnotationInterface,
+.AutoAnnotationInterface, .GenerationInterface, .TrainingInterface,
+.InferenceInterface, .KachiInterface, .UnsupervisedTrainingInterface, .FlowInterface,
+QScrollArea, QScrollArea > QWidget, QScrollArea #qt_scrollarea_viewport,
+#DashboardScroll, #VersionSettingsScroll, #AnnotationCanvasContainer, #KachiResultLabel {
+    background-color: #fafafc !important;
+}
+
+/* ============================================================================
+   3. 透明化规则 (消除多余色块)
+   ============================================================================ */
+SingleDirectionScrollArea, ScrollArea, #DashboardScroll, #VersionScroll, #maskScroll,
+#VersionSettingsScroll, #VersionHistoryList, ListWidget,
+QScrollArea > QWidget > QWidget, SingleDirectionScrollArea > QWidget > QWidget,
+ScrollArea > QWidget > QWidget,
+#projectContainer, #versionContainer, #VersionSettingsGroup, #ExampleContainer,
+#refContainer, #resultContainer, #datasetContainer, #configContainer, #actionContainer,
+#emptyContainer, #supportPathGroup, #anchorContainer, #maskContainer, #anchorScroll,
+#maskScroll, #refScroll, #configScroll, #resultScroll,
+#AnnotationToolbarContent, #AutoAnnotationToolbarContent,
+#GenerationResultScroll, #TrainingConfigScroll, #TrainingConfigContainer {
+    background-color: transparent !important;
+    border: none;
+    outline: none;
+}
+
+/* 滚动条 */
+QScrollArea VScrollBar {
+    background-color: transparent;
+    width: 8px;
+}
+
+/* ============================================================================
+   4. 通用组件 (卡片、按钮、输入框)
+   ============================================================================ */
+/* 卡片 - 白色背景，轻微阴影感 */
+SimpleCardWidget, CardWidget, #VersionStatsCard, #ExampleCard, #AugmentationCard,
+SolidCardWidget, SimpleSolidCardWidget {
+    background-color: #ffffff;
+    border: 1px solid #e5e5ea;
+    border-radius: 12px;
+}
+SimpleCardWidget:hover, CardWidget:hover,
+SolidCardWidget:hover, SimpleSolidCardWidget:hover {
+    background-color: #f8f8fa;
+    border: 1px solid #2563eb;
+}
+
+/* GlobalSettingsCard 和 ProjectSettingsCard 内部容器背景色 */
+#GlobalSettingsScrollArea, #GlobalSettingsContainer,
+#ProjectSettingsScrollArea, #ProjectSettingsContainer,
+#Step2ScrollArea, #Step2Content {
+    background-color: transparent;
+    border: none;
+}
+
+/* 流程配置界面卡片 - 直角样式 */
+#FlowToolBoxCard, #FlowGraphCard, #FlowPropertyCard, #FlowStatusCard {
+    border-radius: 0px;
+}
+
+/* 流程配置界面结果预览标签 */
+#FlowResultDisplayLabel {
+    background-color: #f5f5f7;
+    border: 1px solid #e5e5ea;
+    border-radius: 4px;
+    color: #6e6e73;
+}
+
+/* 节点属性面板 */
+#NodePropertyPanel {
+    background-color: #f5f5f7;
+    border: 1px solid #e5e5ea;
+    border-radius: 4px;
+}
+
+#NodePropertyPanel #FlowPropertyEmptyLabel {
+    color: #9ca3af;
+}
+
+/* 标签文字 - 使用深灰色 */
+StrongBodyLabel { color: #1d1d1f; font-weight: 600; }
+SubtitleLabel, .InterfaceTitle, .ProjectTitle { color: #000000; font-weight: bold; }
+CaptionLabel, .ProjectSubtitle, .VersionInfoLabel, #AnnotationIndexLabel,
+#AnnotationDirLabel, .VersionStatTitle, #TrainingMetricsLabel { color: #6e6e73; }
+
+/* 按钮 */
+PrimaryPushButton { background-color: #2563eb; color: #ffffff; border-radius: 8px; }
+PrimaryPushButton:hover { background-color: #1d4ed8; }
+PushButton {
+    background-color: #ffffff;
+    color: #1d1d1f;
+    border: 1px solid #d1d1d6;
+    border-radius: 8px;
+}
+PushButton:hover {
+    background-color: #f2f2f7;
+    border: 1px solid #2563eb;
+}
+
+/* 图标按钮（ToolButton）：默认纯透明无边框，仅悬浮/按下/选中时显示背景 */
+ToolButton {
+    background-color: transparent;
+    color: #1d1d1f;
+    border: none;
+    border-radius: 6px;
+    padding: 2px;
+}
+ToolButton:hover { background-color: rgba(0, 0, 0, 0.06); }
+ToolButton:pressed { background-color: rgba(0, 0, 0, 0.1); }
+ToolButton:checked { background-color: rgba(0, 122, 255, 0.12); color: #007aff; }
+ToolButton:disabled { color: rgba(0, 0, 0, 0.25); }
+
+/* 输入框 */
+TextEdit, LineEdit, ComboBox, SpinBox, DoubleSpinBox {
+    background-color: #ffffff;
+    border: 1px solid #d1d1d6;
+    color: #1d1d1f;
+    border-radius: 8px;
+    padding: 4px 8px;
+}
+TextEdit:focus, LineEdit:focus, ComboBox:focus, SpinBox:focus, DoubleSpinBox:focus {
+    border: 1px solid #2563eb;
+    background-color: #ffffff;
+}
+
+/* ============================================================================
+   5. 业务特定组件
+   ============================================================================ */
+/* 标注工具栏 */
+#AnnotationToolbar, #AutoAnnotationToolbar, #AutoAnnotationModeToolbar {
+    background: #ffffff;
+    border-color: #e5e5ea;
+}
+#AnnotationToolbar { border-bottom: 1px solid #e5e5ea; max-height: 32px; }
+#AnnotationModeToolbar {
+    background: rgba(255, 255, 255, 0.92);
+    border: 1px solid rgba(0, 0, 0, 0.06);
+    border-radius: 12px;
+}
+
+/* 标注菜单栏 - 浅色主题 */
+#AnnotationMenuBar {
+    background: #ffffff;
+    border-bottom: none;
+    padding: 4px 4px 0px 4px;
+    font-size: 13px;
+    max-height: 32px;
+}
+#AnnotationMenuBar::item {
+    padding: 2px 8px;
+    border-radius: 4px;
+    color: #333333;
+}
+#AnnotationMenuBar::item:selected, #AnnotationMenuBar::item:pressed {
+    background: #e8e8e8;
+    color: #000000;
+}
+#AnnotationMenuBar QMenu {
+    background: #ffffff;
+    border: 1px solid #d0d0d0;
+    border-radius: 6px;
+    padding: 4px 0px;
+}
+#AnnotationMenuBar QMenu::item {
+    padding: 4px 24px;
+    color: #333333;
+    border-radius: 4px;
+    margin: 1px 4px;
+}
+#AnnotationMenuBar QMenu::item:selected {
+    background: #e8e8e8;
+    color: #000000;
+}
+#AnnotationMenuBar QMenu::separator {
+    height: 1px;
+    background: #d0d0d0;
+    margin: 4px 8px;
+}
+
+/* 录制指示器 - 浅色主题 */
+#RecordingIndicator {
+    color: #cc0000;
+    font-weight: bold;
+    font-size: 12px;
+    padding: 0 8px;
+}
+
+/* 侧边栏面板（与画布区域同色，接缝无过渡） */
+#AnnotationSidebar, #AnnotationRightSidebar, #AutoAnnotationSidebar {
+    background: #fafafc;
+    border: none;
+}
+/* 1px 边界线由面板自身边框绘制（画在面板贴画布一侧） */
+#AnnotationSidebar { border-right: 1px solid #d1d1d6; }
+#AnnotationRightSidebar { border-left: 1px solid #d1d1d6; }
+/* 标注界面分割条：手柄透明，1px 边界线改由面板自身边框绘制（恒为细线） */
+#AnnotationSplitter::handle {
+    background: transparent;
+}
+
+/* Agent 侧栏接缝（与标注面板边界线同款） */
+#AgentSidebarSeparator {
+    background-color: #d1d1d6;
+    border: none;
+}
+
+/* 启动界面 */
+#SplashScreenContainer { background-color: #fafafc; border-radius: 15px; border: 1px solid #e5e5ea; }
+#SplashScreenStatus { color: #6e6e73; }
+#SplashScreenCopyright { color: #8e8e93; }
+#SplashScreenTitle { color: #000000; }
+
+/* 对话框 */
+QDialog { background-color: #fafafc; border: 1px solid #e5e5ea; }
+QDialog QListWidget, QDialog ListWidget {
+    background-color: #ffffff;
+    border: 1px solid #e5e5ea;
+    color: #1d1d1f;
+}
+QDialog QCheckBox { color: #1d1d1f; }
+
+/* 控制台与日志 */
+#InferenceLogList, #TrainingLogConsole {
+    background-color: #ffffff;
+    border: 1px solid #e5e5ea;
+    color: #1d1d1f;
+    font-family: 'Consolas', 'Courier New', monospace;
+}
+
+/* 加载遮罩 */
+#loadingMask { background-color: rgba(250, 250, 252, 180); border-radius: 12px; }
+.LoadingTip { color: #000000; font-weight: bold; font-size: 16px; }
+
+/* 其他细节样式 */
+ImageLabel {
+    background-color: #f2f2f7;
+    border-radius: 8px;
+    border: 1px solid #e5e5ea;
+}
+Slider { height: 20px; }
+.AugmentationSelectInfo { color: #2563eb; font-weight: 500; }
+.VersionStatValue { font-size: 22px; font-weight: bold; }
+.VersionStatValue[statColor="#3b82f6"] { color: #2563eb; }
+.VersionStatValue[statColor="#10b981"] { color: #059669; }
+.VersionStatValue[statColor="#f59e0b"] { color: #d97706; }
+.ToolbarLabel { color: #000000; font-weight: bold; font-size: 11px; opacity: 0.9; }
+.IterStatLabel { color: #dc2626; }
+
+/* ============================================================================
+   6. 智能调参界面 (SmartParameterDialog)
+   ============================================================================ */
+SmartParameterDialog {
+    background-color: #fafafc;
+    color: #000000;
+}
+
+SmartParameterDialog QGroupBox {
+    border: 1px solid #e5e5ea;
+    border-radius: 8px;
+    margin-top: 15px;
+    padding-top: 15px;
+    font-weight: bold;
+    background-color: #ffffff;
+}
+
+SmartParameterDialog QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 15px;
+    padding: 0 5px;
+    color: #2563eb;
+}
+
+/* ============================================================================
+   7. VS Code 风格设置界面 - 亮色主题
+   ============================================================================ */
+#ConfigInterface {
+    background-color: #fafafc;
+}
+
+/* 搜索栏 */
+#SearchBar {
+    background-color: #fafafc;
+    border-bottom: 1px solid #e5e5ea;
+}
+/* 覆盖 qfw SearchLineEdit 的主题色下划线 */
+#SearchBar SearchLineEdit {
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid #e5e5ea;
+    border-radius: 0;
+}
+#SearchBar SearchLineEdit:hover {
+    border-bottom: 1px solid #9ca3af;
+}
+#SearchBar SearchLineEdit:focus {
+    border-bottom: 1px solid #2563eb;
+}
+
+/* 分类树 */
+#SettingsCategoryTree {
+    background-color: #fafafc;
+    border-right: 1px solid #e5e5ea;
+}
+
+#CategoryTreeScroll {
+    background-color: transparent;
+    border: none;
+}
+/* 滚动区 viewport 默认用浅色调色板自填充，强制透明以融入面板 */
+#CategoryTreeScroll > QWidget, #CategoryTreeScroll > QWidget > QWidget {
+    background-color: transparent;
+}
+#GroupContainer {
+    background-color: transparent;
+}
+
+/* 页头 */
+#PageTitle {
+    font-size: 20px;
+    font-weight: 600;
+    color: #000000;
+}
+#PageDesc {
+    color: #6e6e73;
+    font-size: 13px;
+}
+
+/* 设置分组卡片 */
+#SectionCard {
+    background-color: #ffffff;
+    border: 1px solid #e5e5ea;
+    border-radius: 12px;
+}
+#SectionCard #SectionHeader {
+    border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+/* 设置项行 */
+#SettingItem {
+    background-color: transparent;
+}
+#SettingItem:hover {
+    background-color: rgba(0, 0, 0, 0.02);
+}
+#SettingTitle {
+    color: #1d1d1f;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+/* 分组标题 */
+#GroupHeader {
+    background-color: transparent;
+}
+
+#GroupHeader:hover {
+    background-color: rgba(0, 0, 0, 0.03);
+}
+
+#GroupArrow {
+    color: #6e6e73;
+    font-size: 10px;
+}
+
+#GroupTitle {
+    color: #6e6e73;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+/* 分类按钮 */
+#CategoryButton {
+    background-color: transparent;
+    border-left: 2px solid transparent;
+}
+
+#CategoryButton:hover {
+    background-color: rgba(0, 0, 0, 0.03);
+}
+
+#CategoryButton[selected="true"] {
+    background-color: rgba(37, 99, 235, 0.08);
+    border-left-color: #2563eb;
+}
+
+#CategoryButtonTitle {
+    color: #1d1d1f;
+    font-size: 13px;
+}
+
+#CategoryButton[selected="true"] #CategoryButtonTitle {
+    color: #2563eb;
+    font-weight: 500;
+}
+
+/* 分隔线 */
+#CategorySeparator {
+    background-color: #e5e5ea;
+    border: none;
+    width: 1px;
+}
+
+/* 内容区域 */
+#SettingsStacked {
+    background-color: #fafafc;
+}
+
+#SettingsContentPage {
+    background-color: transparent;
+    border: none;
+}
+
+/* 设置项 */
+#SettingItem {
+    background-color: transparent;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+#SettingItem:hover {
+    background-color: rgba(0, 0, 0, 0.02);
+}
+
+#SettingTitle {
+    color: #1d1d1f;
+    font-size: 14px;
+    font-weight: 400;
+}
+
+#SettingDescription {
+    color: #6e6e73;
+    font-size: 12px;
+    margin-top: 0;
+    line-height: 1.4;
+}
+
+/* 分组标题 */
+#SectionHeader {
+    background-color: transparent;
+}
+
+#SectionHeader:hover {
+    background-color: rgba(0, 0, 0, 0.02);
+}
+
+#CollapseArrow {
+    color: #6e6e73;
+    font-size: 10px;
+}
+
+#SectionTitle {
+    color: #1d1d1f;
+    font-size: 16px;
+    font-weight: 600;
+}
+
+/* 分隔线 */
+#SettingSeparator {
+    background-color: transparent;
+    border: none;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+    max-height: 1px;
+    margin: 0;
+}
+
+/* ============================================================================
+   8. 无边框窗口 & 导航栏 - 亮色主题
+   ============================================================================ */
+#MainWindowCentral {
+    background-color: #f8f8f8;
+    border-top-left-radius: 9px;
+    border-top-right-radius: 9px;
+}
+
+#NavigationBar {
+    background-color: #f8f8f8;
+}
+
+#NavButton {
+    background-color: transparent;
+    border: none;
+    border-radius: 6px;
+    color: #6e6e73;
+    padding: 8px;
+}
+
+#NavButton:hover {
+    background-color: rgba(0, 0, 0, 0.05);
+    color: #1d1d1f;
+}
+
+#NavButton:checked {
+    background-color: rgba(0, 0, 0, 0.08);
+    color: #000000;
+}
+
+#CustomTitleBar {
+    background-color: #f8f8f8;
+}
+
+#DragArea {
+    background-color: transparent;
+}
+
+#TitleBarAppName {
+    color: #1f1f1f;
+    font-size: 13px;
+    font-weight: 500;
+    padding: 0;
+}
+
+#GlobalMenuBar {
+    background-color: transparent;
+    color: #1d1d1f;
+    spacing: 0px;
+    border: none;
+    padding-top: 4px;
+}
+
+#GlobalMenuBar::item {
+    padding: 7px 12px;
+    border-radius: 4px;
+    color: #333333;
+}
+
+#GlobalMenuBar::item:selected, #GlobalMenuBar::item:pressed {
+    background: #e8e8e8;
+    color: #000000;
+}
+
+#GlobalMenuBar QMenu {
+    background: #ffffff;
+    border: 1px solid #d0d0d0;
+    border-radius: 6px;
+    padding: 4px 0px;
+}
+
+#GlobalMenuBar QMenu::item {
+    padding: 5px 24px;
+    color: #333333;
+    border-radius: 4px;
+    margin: 1px 4px;
+}
+
+#GlobalMenuBar QMenu::item:selected {
+    background: #e8e8e8;
+    color: #000000;
+}
+
+#GlobalMenuBar QMenu::separator {
+    height: 1px;
+    background: #d0d0d0;
+    margin: 4px 8px;
+}
+
+#WindowBtn_minimize, #WindowBtn_maximize {
+    background-color: transparent;
+    border: none;
+    border-radius: 0px;
+    color: #555555;
+    min-width: 46px;
+    max-width: 46px;
+    min-height: 32px;
+    max-height: 32px;
+}
+
+#WindowBtn_minimize:hover, #WindowBtn_maximize:hover {
+    background-color: rgba(0, 0, 0, 0.08);
+    color: #000000;
+}
+
+#WindowBtn_close {
+    background-color: transparent;
+    border: none;
+    border-radius: 0px;
+    color: #555555;
+    min-width: 46px;
+    max-width: 46px;
+    min-height: 32px;
+    max-height: 32px;
+}
+
+#WindowBtn_close:hover {
+    background-color: #e81123;
+    color: white;
+}
+
+#CustomStatusBar {
+    background-color: #f8f8f8;
+    border-top: 1px solid #d0d0d0;
+    border-bottom-left-radius: 9px;
+    border-bottom-right-radius: 9px;
+    color: #6e6e73;
+    font-size: 12px;
+}

@@ -1,0 +1,12 @@
+{
+  "dashboard": true,
+  "annotation": true,
+  "version": true,
+  "flow": false,
+  "generation": false,
+  "inference": false,
+  "kachi": false,
+  "testing": false,
+  "training": false,
+  "unsupervised": false
+}

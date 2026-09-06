@@ -1,0 +1,1023 @@
+[
+  {
+    "key": "theme",
+    "title": "主题模式",
+    "type": "combo",
+    "options": [
+      "暗色主题",
+      "亮色主题"
+    ],
+    "default": "dark",
+    "value": "dark",
+    "description": "控制应用程序的主题风格。暗色主题适合长时间使用，亮色主题更适合白天环境。切换后立即生效。"
+  },
+  {
+    "key": "outputs_root",
+    "title": "项目根目录",
+    "type": "string",
+    "default": "",
+    "value": "",
+    "description": "项目输出的根目录路径。所有项目的标注结果、版本数据等都会存储在此目录下。留空则使用默认的 outputs 目录。"
+  },
+  {
+    "key": "example_model",
+    "title": "示例模型",
+    "type": "combo",
+    "options": [
+      "trtsam3",
+      "sam3",
+      "sam3_radio",
+      "yoloe-26x"
+    ],
+    "default": "trtsam3",
+    "value": "sam3",
+    "description": "选择用于自动标注的AI模型。trtsam3是TensorRT加速版本，速度最快；sam3是标准版本；sam3_radio支持文本引导；yoloe-26x是YOLO系列轻量模型。"
+  },
+  {
+    "key": "example_img_size",
+    "title": "示例推理尺寸",
+    "type": "int",
+    "min": 64,
+    "max": 2048,
+    "default": 640,
+    "value": 644,
+    "description": "自动标注时输入图像的尺寸（像素）。较大的尺寸可以检测更小的缺陷，但会增加推理时间和显存占用。建议根据显卡性能选择512-1024之间的值。"
+  },
+  {
+    "key": "high_precision",
+    "title": "高精度",
+    "type": "combo",
+    "options": [
+      "打开",
+      "关闭"
+    ],
+    "default": "关闭",
+    "value": "关闭",
+    "description": "启用高精度模式会使用更精确的后处理算法，可以减少误检和漏检，但会显著降低推理速度。适用于对精度要求高的场景。"
+  },
+  {
+    "key": "mask_smooth_enabled",
+    "title": "掩码平滑",
+    "type": "combo",
+    "options": [
+      "打开",
+      "关闭"
+    ],
+    "default": "打开",
+    "value": "打开",
+    "description": "启用掩码平滑可以优化AI分割结果的边缘，使标注边界更加平滑自然。关闭后保持原始分割边缘，适合需要精确像素级标注的场景。"
+  },
+  {
+    "key": "mask_smooth_epsilon",
+    "title": "掩码平滑系数",
+    "type": "float",
+    "min": 0.0001,
+    "max": 0.01,
+    "default": 0.001,
+    "value": 0.001,
+    "description": "控制掩码边缘的平滑程度。值越小边缘越平滑，值越大边缘越贴近原始分割。范围0.0001-0.01，推荐值0.001。"
+  },
+  {
+    "key": "refine_method",
+    "title": "细化模型",
+    "type": "combo",
+    "options": [
+      "vitmatte",
+      "cascadepsp"
+    ],
+    "default": "vitmatte",
+    "value": "vitmatte",
+    "description": "选择用于边缘细化的模型。vitmatte基于Transformer，效果更精细；cascadepsp为级联PSP模型，速度快且显存占用低。"
+  },
+  {
+    "key": "refine_use_onnx",
+    "title": "细化模型ONNX加速",
+    "type": "combo",
+    "options": [
+      "打开",
+      "关闭"
+    ],
+    "default": "打开",
+    "value": "打开",
+    "description": "启用ONNX推理加速（仅ViTMatte模型生效）。开启后显著提升推理速度，需确保模型目录下存在ONNX格式模型文件。"
+  },
+  {
+    "key": "refine_fast",
+    "title": "CascadePSP快速模式",
+    "type": "combo",
+    "options": [
+      "关闭",
+      "打开"
+    ],
+    "default": "关闭",
+    "value": "关闭",
+    "description": "CascadePSP快速模式仅执行全局细化步骤，跳过多尺度局部细化。速度更快但精度略低，适用于实时标注场景。"
+  },
+  {
+    "key": "refine_image_size",
+    "title": "细化图像处理尺寸",
+    "type": "int",
+    "min": 32,
+    "max": 2048,
+    "default": 896,
+    "value": 896,
+    "description": "细化模型处理图像时的最大边长。较大的值保留更多细节但占用更多显存。ViTMatte推荐896，CascadePSP推荐320。"
+  },
+  {
+    "key": "refine_trimap_thickness",
+    "title": "Trimap区域厚度",
+    "type": "int",
+    "min": 1,
+    "max": 100,
+    "default": 20,
+    "value": 20,
+    "description": "ViTMatte模型的Trimap灰色过渡区域厚度（像素）。该区域是模型重点优化的边界区域，值越大细化范围越广，但计算量也相应增加。"
+  },
+  {
+    "key": "refine_use_roi",
+    "title": "细化ROI局部优化",
+    "type": "combo",
+    "options": [
+      "打开",
+      "关闭"
+    ],
+    "default": "打开",
+    "value": "打开",
+    "description": "启用后仅对标注区域及其周边进行细化，大幅减少显存占用和处理时间，特别适合大尺寸图像。关闭则对全图进行细化。"
+  },
+  {
+    "key": "refine_roi_margin",
+    "title": "ROI扩展比例",
+    "type": "float",
+    "min": 0.01,
+    "max": 1.0,
+    "default": 0.15,
+    "value": 0.15,
+    "description": "ROI区域向外扩展的比例。较大的值为边界提供更多上下文信息，细化效果更好，但处理区域增大。推荐0.1-0.3之间。"
+  },
+  {
+    "key": "slice_inference_enabled",
+    "title": "启用切片推理",
+    "type": "combo",
+    "options": [
+      "打开",
+      "关闭"
+    ],
+    "default": "关闭",
+    "value": "关闭",
+    "description": "启用切片推理可以处理超大尺寸图像。系统会将图像分割成多个小块分别推理，然后合并结果。适用于高分辨率工业检测场景。"
+  },
+  {
+    "key": "slice_rows",
+    "title": "切片行数",
+    "type": "int",
+    "min": 1,
+    "max": 4,
+    "default": 2,
+    "value": 2,
+    "description": "将图像在垂直方向分割的块数。例如设置为2表示将图像分为上下两块。增加切片数可以处理更大的图像，但会增加处理时间。"
+  },
+  {
+    "key": "slice_cols",
+    "title": "切片列数",
+    "type": "int",
+    "min": 1,
+    "max": 4,
+    "default": 2,
+    "value": 2,
+    "description": "将图像在水平方向分割的块数。例如设置为2表示将图像分为左右两块。与切片行数配合使用，总切片数=行数×列数。"
+  },
+  {
+    "key": "slice_overlap_ratio",
+    "title": "切片重叠比例",
+    "type": "float",
+    "min": 0,
+    "max": 1,
+    "default": 0.2,
+    "value": 0.2,
+    "description": "相邻切片之间的重叠比例。重叠区域可以避免边缘漏检，但会增加计算量。推荐值0.1-0.3。"
+  },
+  {
+    "key": "slice_postprocess_type",
+    "title": "切片后处理算法",
+    "type": "combo",
+    "options": [
+      "GREEDYNMM",
+      "NMS",
+      "NMM"
+    ],
+    "default": "GREEDYNMM",
+    "value": "GREEDYNMM",
+    "description": "选择切片合并时的后处理算法。GREEDYNMM适合大多数场景；NMS是非极大值抑制；NMM是NMS的变体。"
+  },
+  {
+    "key": "slice_match_metric",
+    "title": "切片匹配度量",
+    "type": "combo",
+    "options": [
+      "IOS",
+      "IOU"
+    ],
+    "default": "IOS",
+    "value": "IOS",
+    "description": "用于判断两个检测结果是否匹配的度量标准。IOS是交集除以较小框面积；IOU是交集除以并集面积。"
+  },
+  {
+    "key": "slice_match_threshold",
+    "title": "切片匹配阈值",
+    "type": "float",
+    "min": 0.1,
+    "max": 0.9,
+    "default": 0.5,
+    "value": 0.5,
+    "description": "将检测结果判定为匹配的阈值。超过此阈值的两个检测会被合并为一个。值越大匹配越严格。"
+  },
+  {
+    "key": "weights_dir",
+    "title": "权重根目录",
+    "type": "string",
+    "default": "weights",
+    "value": "weights",
+    "description": "模型权重文件的根目录路径。所有模型的权重文件都存储在此目录下。支持相对路径（相对于项目根目录）或绝对路径。"
+  },
+  {
+    "key": "sam_dir",
+    "title": "SAM模型目录",
+    "type": "string",
+    "default": "weights/sam",
+    "value": "weights/sam",
+    "description": "SAM（Segment Anything Model）模型文件的存储目录。包含SAM各版本的权重文件。"
+  },
+  {
+    "key": "sam2_dir",
+    "title": "SAM2模型目录",
+    "type": "string",
+    "default": "weights/sam2",
+    "value": "weights/sam2",
+    "description": "SAM2模型文件的存储目录。SAM2是SAM的升级版本，支持更好的视频分割。"
+  },
+  {
+    "key": "yolo_dir",
+    "title": "YOLO模型目录",
+    "type": "string",
+    "default": "weights/yolo",
+    "value": "weights/yolo",
+    "description": "YOLO系列模型文件的存储目录。包含YOLOE、YOLO11等模型的权重文件。"
+  },
+  {
+    "key": "trt_dir",
+    "title": "TensorRT模型目录",
+    "type": "string",
+    "default": "weights/trtsam3",
+    "value": "weights/trtsam3",
+    "description": "TensorRT加速模型文件的存储目录。包含TRT格式的SAM3模型引擎文件。"
+  },
+  {
+    "key": "hqsam_dir",
+    "title": "HQ-SAM模型目录",
+    "type": "string",
+    "default": "weights/hqsam",
+    "value": "weights/hqsam",
+    "description": "HQ-SAM（高质量SAM）模型文件的存储目录。提供更精细的分割结果。"
+  },
+  {
+    "key": "refine_dir",
+    "title": "Refine模型目录",
+    "type": "string",
+    "default": "weights/refine",
+    "value": "weights/refine",
+    "description": "边缘细化模型文件的存储目录。包含VitMatte等用于优化掩码边缘的模型。"
+  },
+  {
+    "key": "sam_b_path",
+    "title": "SAM-B模型文件",
+    "type": "string",
+    "default": "weights/sam/sam_b.pt",
+    "value": "weights/sam/sam_b.pt",
+    "description": "SAM Base模型权重文件路径。"
+  },
+  {
+    "key": "sam_l_path",
+    "title": "SAM-L模型文件",
+    "type": "string",
+    "default": "weights/sam/sam_l.pt",
+    "value": "weights/sam/sam_l.pt",
+    "description": "SAM Large模型权重文件路径。"
+  },
+  {
+    "key": "sam_vit_h_path",
+    "title": "SAM ViT-H模型文件",
+    "type": "string",
+    "default": "weights/sam/sam_vit_h_4b8939.pth",
+    "value": "weights/sam/sam_vit_h_4b8939.pth",
+    "description": "SAM ViT-Huge模型权重文件路径。"
+  },
+  {
+    "key": "mobile_sam_path",
+    "title": "MobileSAM模型文件",
+    "type": "string",
+    "default": "weights/sam/mobile_sam.pt",
+    "value": "weights/sam/mobile_sam.pt",
+    "description": "MobileSAM轻量级模型权重文件路径。"
+  },
+  {
+    "key": "sam_hq_b_path",
+    "title": "HQ-SAM-B模型文件",
+    "type": "string",
+    "default": "weights/hqsam/sam_hq_vit_b.pth",
+    "value": "weights/hqsam/sam_hq_vit_b.pth",
+    "description": "HQ-SAM Base模型权重文件路径。"
+  },
+  {
+    "key": "sam_hq_l_path",
+    "title": "HQ-SAM-L模型文件",
+    "type": "string",
+    "default": "weights/hqsam/sam_hq_vit_l.pth",
+    "value": "weights/hqsam/sam_hq_vit_l.pth",
+    "description": "HQ-SAM Large模型权重文件路径。"
+  },
+  {
+    "key": "sam_hq_tiny_path",
+    "title": "HQ-SAM-Tiny模型文件",
+    "type": "string",
+    "default": "weights/hqsam/sam_hq_vit_tiny.pth",
+    "value": "weights/hqsam/sam_hq_vit_tiny.pth",
+    "description": "HQ-SAM Tiny模型权重文件路径。"
+  },
+  {
+    "key": "sam2_b_path",
+    "title": "SAM2-B模型文件",
+    "type": "string",
+    "default": "weights/sam2/sam2_b.pt",
+    "value": "weights/sam2/sam2_b.pt",
+    "description": "SAM2 Base模型权重文件路径。"
+  },
+  {
+    "key": "sam2_l_path",
+    "title": "SAM2-L模型文件",
+    "type": "string",
+    "default": "weights/sam2/sam2_l.pt",
+    "value": "weights/sam2/sam2_l.pt",
+    "description": "SAM2 Large模型权重文件路径。"
+  },
+  {
+    "key": "sam2_hq_b_path",
+    "title": "SAM2-HQ-B模型文件",
+    "type": "string",
+    "default": "weights/hqsam/sam2.1_hq_hiera_base_plus.pt",
+    "value": "weights/hqsam/sam2.1_hq_hiera_base_plus.pt",
+    "description": "SAM2 HQ Base模型权重文件路径。"
+  },
+  {
+    "key": "sam2_hq_l_path",
+    "title": "SAM2-HQ-L模型文件",
+    "type": "string",
+    "default": "weights/hqsam/sam2.1_hq_hiera_large.pt",
+    "value": "weights/hqsam/sam2.1_hq_hiera_large.pt",
+    "description": "SAM2 HQ Large模型权重文件路径。"
+  },
+  {
+    "key": "yoloe_26x_path",
+    "title": "YOLOE-26x模型文件",
+    "type": "string",
+    "default": "weights/yolo/yoloe-26x-seg.pt",
+    "value": "weights/yolo/yoloe-26x-seg.pt",
+    "description": "YOLOE 26x分割模型权重文件路径。"
+  },
+  {
+    "key": "yoloe_26n_path",
+    "title": "YOLOE-26n模型文件",
+    "type": "string",
+    "default": "weights/yolo/yoloe-26n-seg.pt",
+    "value": "weights/yolo/yoloe-26n-seg.pt",
+    "description": "YOLOE 26n分割模型权重文件路径。"
+  },
+  {
+    "key": "yoloe_26s_path",
+    "title": "YOLOE-26s模型文件",
+    "type": "string",
+    "default": "weights/yolo/yolo26s-seg.pt",
+    "value": "weights/yolo/yolo26s-seg.pt",
+    "description": "YOLOE 26s分割模型权重文件路径。"
+  },
+  {
+    "key": "yolo11n_path",
+    "title": "YOLO11n模型文件",
+    "type": "string",
+    "default": "weights/yolo/yolo11n-seg.pt",
+    "value": "weights/yolo/yolo11n-seg.pt",
+    "description": "YOLO11n分割模型权重文件路径。"
+  },
+  {
+    "key": "yolov8n_path",
+    "title": "YOLOv8n模型文件",
+    "type": "string",
+    "default": "weights/yolo/yolov8n-seg.pt",
+    "value": "weights/yolo/yolov8n-seg.pt",
+    "description": "YOLOv8n分割模型权重文件路径。"
+  },
+  {
+    "key": "sam3_path",
+    "title": "SAM3模型文件",
+    "type": "string",
+    "default": "weights/sam3/sam3.pt",
+    "value": "weights/sam3/sam3.pt",
+    "description": "SAM3模型权重文件路径。"
+  },
+  {
+    "key": "sam3_bpe_path",
+    "title": "SAM3 BPE词表文件",
+    "type": "string",
+    "default": "weights/sam3/bpe_simple_vocab_16e6.txt.gz",
+    "value": "weights/sam3/bpe_simple_vocab_16e6.txt.gz",
+    "description": "SAM3 BPE分词器词表文件路径。"
+  },
+  {
+    "key": "vision_encoder",
+    "title": "TRT视觉编码器",
+    "type": "string",
+    "default": "weights/trtsam3/vision-encoder.engine",
+    "value": "weights/trtsam3/vision-encoder.engine",
+    "description": "TensorRT视觉编码器引擎文件路径。"
+  },
+  {
+    "key": "text_encoder",
+    "title": "TRT文本编码器",
+    "type": "string",
+    "default": "weights/trtsam3/text-encoder.engine",
+    "value": "weights/trtsam3/text-encoder.engine",
+    "description": "TensorRT文本编码器引擎文件路径。"
+  },
+  {
+    "key": "geometry_encoder",
+    "title": "TRT几何编码器",
+    "type": "string",
+    "default": "weights/trtsam3/geometry-encoder.engine",
+    "value": "weights/trtsam3/geometry-encoder.engine",
+    "description": "TensorRT几何编码器引擎文件路径。"
+  },
+  {
+    "key": "decoder",
+    "title": "TRT解码器",
+    "type": "string",
+    "default": "weights/trtsam3/decoder.engine",
+    "value": "weights/trtsam3/decoder.engine",
+    "description": "TensorRT解码器引擎文件路径。"
+  },
+  {
+    "key": "tokenizer_path",
+    "title": "TRT分词器",
+    "type": "string",
+    "default": "weights/trtsam3/tokenizer.json",
+    "value": "weights/trtsam3/tokenizer.json",
+    "description": "TensorRT分词器配置文件路径。"
+  },
+  {
+    "key": "vitmatte_onnx_path",
+    "title": "VitMatte ONNX模型",
+    "type": "string",
+    "default": "weights/refine/vitmatte-small-composition-1k/onnx/model_quantized.onnx",
+    "value": "weights/refine/vitmatte-small-composition-1k/onnx/model_quantized.onnx",
+    "description": "VitMatte边缘细化ONNX模型文件路径。"
+  },
+  {
+    "key": "vitmatte_dir",
+    "title": "VitMatte模型目录",
+    "type": "string",
+    "default": "weights/refine/vitmatte-small-composition-1k",
+    "value": "weights/refine/vitmatte-small-composition-1k",
+    "description": "VitMatte PyTorch模型目录路径（HuggingFace格式）。"
+  },
+  {
+    "key": "sam_onnx_b_encoder_path",
+    "title": "SAM-ONNX-B编码器",
+    "type": "string",
+    "default": "weights/sam/onnx/sam_vit_b_01ec64.encoder.onnx",
+    "value": "weights/sam/onnx/sam_vit_b_01ec64.encoder.onnx",
+    "description": "SAM Base ONNX编码器文件路径。"
+  },
+  {
+    "key": "sam_onnx_b_decoder_path",
+    "title": "SAM-ONNX-B解码器",
+    "type": "string",
+    "default": "weights/sam/onnx/sam_vit_b_01ec64.decoder.onnx",
+    "value": "weights/sam/onnx/sam_vit_b_01ec64.decoder.onnx",
+    "description": "SAM Base ONNX解码器文件路径。"
+  },
+  {
+    "key": "sam_onnx_l_encoder_path",
+    "title": "SAM-ONNX-L编码器",
+    "type": "string",
+    "default": "weights/sam/onnx/sam_vit_l_0b3195.encoder.onnx",
+    "value": "weights/sam/onnx/sam_vit_l_0b3195.encoder.onnx",
+    "description": "SAM Large ONNX编码器文件路径。"
+  },
+  {
+    "key": "sam_onnx_l_decoder_path",
+    "title": "SAM-ONNX-L解码器",
+    "type": "string",
+    "default": "weights/sam/onnx/sam_vit_l_0b3195.decoder.onnx",
+    "value": "weights/sam/onnx/sam_vit_l_0b3195.decoder.onnx",
+    "description": "SAM Large ONNX解码器文件路径。"
+  },
+  {
+    "key": "sam_onnx_h_encoder_path",
+    "title": "SAM-ONNX-H编码器",
+    "type": "string",
+    "default": "weights/sam/onnx/sam_vit_h_4b8939.encoder.onnx",
+    "value": "weights/sam/onnx/sam_vit_h_4b8939.encoder.onnx",
+    "description": "SAM Huge ONNX编码器文件路径。"
+  },
+  {
+    "key": "sam_onnx_h_decoder_path",
+    "title": "SAM-ONNX-H解码器",
+    "type": "string",
+    "default": "weights/sam/onnx/sam_vit_h_4b8939.decoder.onnx",
+    "value": "weights/sam/onnx/sam_vit_h_4b8939.decoder.onnx",
+    "description": "SAM Huge ONNX解码器文件路径。"
+  },
+  {
+    "key": "mobile_sam_onnx_encoder_path",
+    "title": "MobileSAM-ONNX编码器",
+    "type": "string",
+    "default": "weights/sam/onnx/mobile_sam.encoder.onnx",
+    "value": "weights/sam/onnx/mobile_sam.encoder.onnx",
+    "description": "MobileSAM ONNX编码器文件路径。"
+  },
+  {
+    "key": "mobile_sam_onnx_decoder_path",
+    "title": "MobileSAM-ONNX解码器",
+    "type": "string",
+    "default": "weights/sam/onnx/sam_vit_h_4b8939.decoder.onnx",
+    "value": "weights/sam/onnx/sam_vit_h_4b8939.decoder.onnx",
+    "description": "MobileSAM ONNX解码器文件路径。"
+  },
+  {
+    "key": "hqsam_onnx_b_encoder_path",
+    "title": "HQ-SAM-ONNX-B编码器",
+    "type": "string",
+    "default": "weights/sam/onnx/sam_hq_vit_b_encoder.onnx",
+    "value": "weights/sam/onnx/sam_hq_vit_b_encoder.onnx",
+    "description": "HQ-SAM Base ONNX编码器文件路径。"
+  },
+  {
+    "key": "hqsam_onnx_b_decoder_path",
+    "title": "HQ-SAM-ONNX-B解码器",
+    "type": "string",
+    "default": "weights/sam/onnx/sam_hq_vit_b_decoder.onnx",
+    "value": "weights/sam/onnx/sam_hq_vit_b_decoder.onnx",
+    "description": "HQ-SAM Base ONNX解码器文件路径。"
+  },
+  {
+    "key": "hqsam_onnx_l_encoder_path",
+    "title": "HQ-SAM-ONNX-L编码器",
+    "type": "string",
+    "default": "weights/sam/onnx/sam_hq_vit_l_encoder.onnx",
+    "value": "weights/sam/onnx/sam_hq_vit_l_encoder.onnx",
+    "description": "HQ-SAM Large ONNX编码器文件路径。"
+  },
+  {
+    "key": "hqsam_onnx_l_decoder_path",
+    "title": "HQ-SAM-ONNX-L解码器",
+    "type": "string",
+    "default": "weights/sam/onnx/sam_hq_vit_l_decoder.onnx",
+    "value": "weights/sam/onnx/sam_hq_vit_l_decoder.onnx",
+    "description": "HQ-SAM Large ONNX解码器文件路径。"
+  },
+  {
+    "key": "hqsam_onnx_h_encoder_path",
+    "title": "HQ-SAM-ONNX-H编码器",
+    "type": "string",
+    "default": "weights/sam/onnx/sam_hq_vit_h_encoder.onnx",
+    "value": "weights/sam/onnx/sam_hq_vit_h_encoder.onnx",
+    "description": "HQ-SAM Huge ONNX编码器文件路径。"
+  },
+  {
+    "key": "hqsam_onnx_h_decoder_path",
+    "title": "HQ-SAM-ONNX-H解码器",
+    "type": "string",
+    "default": "weights/sam/onnx/sam_hq_vit_h_decoder.onnx",
+    "value": "weights/sam/onnx/sam_hq_vit_h_decoder.onnx",
+    "description": "HQ-SAM Huge ONNX解码器文件路径。"
+  },
+  {
+    "key": "sam2_onnx_b_encoder_path",
+    "title": "SAM2-ONNX-B编码器",
+    "type": "string",
+    "default": "weights/sam2/onnx/sam2.1_hiera_base_plus.encoder.onnx",
+    "value": "weights/sam2/onnx/sam2.1_hiera_base_plus.encoder.onnx",
+    "description": "SAM2 Base ONNX编码器文件路径。"
+  },
+  {
+    "key": "sam2_onnx_b_decoder_path",
+    "title": "SAM2-ONNX-B解码器",
+    "type": "string",
+    "default": "weights/sam2/onnx/sam2.1_hiera_base_plus.decoder.onnx",
+    "value": "weights/sam2/onnx/sam2.1_hiera_base_plus.decoder.onnx",
+    "description": "SAM2 Base ONNX解码器文件路径。"
+  },
+  {
+    "key": "sam2_onnx_l_encoder_path",
+    "title": "SAM2-ONNX-L编码器",
+    "type": "string",
+    "default": "weights/sam2/onnx/sam2.1_hiera_large.encoder.onnx",
+    "value": "weights/sam2/onnx/sam2.1_hiera_large.encoder.onnx",
+    "description": "SAM2 Large ONNX编码器文件路径。"
+  },
+  {
+    "key": "sam2_onnx_l_decoder_path",
+    "title": "SAM2-ONNX-L解码器",
+    "type": "string",
+    "default": "weights/sam2/onnx/sam2.1_hiera_large.decoder.onnx",
+    "value": "weights/sam2/onnx/sam2.1_hiera_large.decoder.onnx",
+    "description": "SAM2 Large ONNX解码器文件路径。"
+  },
+  {
+    "key": "sam2_onnx_s_encoder_path",
+    "title": "SAM2-ONNX-S编码器",
+    "type": "string",
+    "default": "weights/sam2/onnx/sam2.1_hiera_small.encoder.onnx",
+    "value": "weights/sam2/onnx/sam2.1_hiera_small.encoder.onnx",
+    "description": "SAM2 Small ONNX编码器文件路径。"
+  },
+  {
+    "key": "sam2_onnx_s_decoder_path",
+    "title": "SAM2-ONNX-S解码器",
+    "type": "string",
+    "default": "weights/sam2/onnx/sam2.1_hiera_small.decoder.onnx",
+    "value": "weights/sam2/onnx/sam2.1_hiera_small.decoder.onnx",
+    "description": "SAM2 Small ONNX解码器文件路径。"
+  },
+  {
+    "key": "sam2_onnx_t_encoder_path",
+    "title": "SAM2-ONNX-T编码器",
+    "type": "string",
+    "default": "weights/sam2/onnx/sam2.1_hiera_tiny.encoder.onnx",
+    "value": "weights/sam2/onnx/sam2.1_hiera_tiny.encoder.onnx",
+    "description": "SAM2 Tiny ONNX编码器文件路径。"
+  },
+  {
+    "key": "sam2_onnx_t_decoder_path",
+    "title": "SAM2-ONNX-T解码器",
+    "type": "string",
+    "default": "weights/sam2/onnx/sam2.1_hiera_tiny.decoder.onnx",
+    "value": "weights/sam2/onnx/sam2.1_hiera_tiny.decoder.onnx",
+    "description": "SAM2 Tiny ONNX解码器文件路径。"
+  },
+  {
+    "key": "default_interactive_model",
+    "title": "交互式标注模型",
+    "type": "combo",
+    "options": [
+      "mobilesam_onnx",
+      "sam_onnx_b",
+      "sam3"
+    ],
+    "default": "mobilesam_onnx",
+    "value": "mobilesam_onnx",
+    "description": "选择用于交互式标注的AI模型。"
+  },
+  {
+    "key": "default_interactive_img_size",
+    "title": "交互式标注推理尺寸",
+    "type": "int",
+    "min": 256,
+    "max": 2048,
+    "default": 1024,
+    "value": 1024,
+    "description": "交互式标注时输入图像的尺寸。"
+  },
+  {
+    "key": "auto_save_enabled",
+    "title": "自动保存",
+    "type": "combo",
+    "options": [
+      "打开",
+      "关闭"
+    ],
+    "default": "打开",
+    "value": "打开",
+    "description": "开启后每次完成标注操作时自动保存。"
+  },
+  {
+    "key": "ai_assistance_enabled",
+    "title": "AI辅助标注",
+    "type": "combo",
+    "options": [
+      "打开",
+      "关闭"
+    ],
+    "default": "打开",
+    "value": "打开",
+    "description": "启用AI辅助标注功能。"
+  },
+  {
+    "key": "default_output_dir",
+    "title": "默认保存路径",
+    "type": "string",
+    "default": "",
+    "value": "",
+    "description": "标注结果的默认保存目录，留空则使用项目默认路径。"
+  },
+  {
+    "key": "default_line_width",
+    "title": "默认线宽",
+    "type": "int",
+    "min": 1,
+    "max": 10,
+    "default": 2,
+    "value": 2,
+    "description": "标注框的默认线宽（像素）。"
+  },
+  {
+    "key": "default_line_color",
+    "title": "默认线色",
+    "type": "string",
+    "default": "#00ff00",
+    "value": "#00ff00",
+    "description": "标注框的默认颜色，支持十六进制格式如 #00ff00。"
+  },
+  {
+    "key": "default_fill_opacity",
+    "title": "默认填充透明度",
+    "type": "int",
+    "min": 0,
+    "max": 100,
+    "default": 30,
+    "value": 30,
+    "description": "标注区域填充的默认透明度（0-100）。0为完全透明，100为完全不透明。"
+  },
+  {
+    "key": "enhance_default_on",
+    "title": "图像增强默认开启",
+    "type": "combo",
+    "options": [
+      "关闭",
+      "打开"
+    ],
+    "default": "关闭",
+    "value": "关闭",
+    "description": "启动时是否默认开启图像增强视图。"
+  },
+  {
+    "key": "left_panel_visible",
+    "title": "左栏显示",
+    "type": "combo",
+    "options": [
+      "显示",
+      "隐藏"
+    ],
+    "default": "显示",
+    "value": "显示",
+    "description": "标注界面左侧面板的默认显示状态。"
+  },
+  {
+    "key": "right_panel_visible",
+    "title": "右栏显示",
+    "type": "combo",
+    "options": [
+      "显示",
+      "隐藏"
+    ],
+    "default": "显示",
+    "value": "显示",
+    "description": "标注界面右侧面板的默认显示状态。"
+  },
+  {
+    "key": "default_export_format",
+    "title": "默认导出格式",
+    "type": "combo",
+    "options": [
+      "labelme",
+      "yoloseg",
+      "yolodet",
+      "coco",
+      "voc"
+    ],
+    "default": "labelme",
+    "value": "labelme",
+    "description": "项目模式下标注数据的默认导出格式。"
+  },
+  {
+    "key": "default_export_task",
+    "title": "默认导出任务",
+    "type": "combo",
+    "options": [
+      "segmentation",
+      "detection"
+    ],
+    "default": "segmentation",
+    "value": "segmentation",
+    "description": "项目模式下默认的导出任务类型。"
+  },
+  {
+    "key": "default_split_ratio",
+    "title": "默认划分比例",
+    "type": "string",
+    "default": "8:2:0",
+    "value": "8:2:0",
+    "description": "数据集默认划分比例（训练:验证:测试），如8:2:0。"
+  },
+  {
+    "key": "default_inference_conf_thres",
+    "title": "默认置信度阈值",
+    "type": "float",
+    "min": 0.01,
+    "max": 1.0,
+    "default": 0.25,
+    "value": 0.25,
+    "description": "推理预览的默认置信度阈值。"
+  },
+  {
+    "key": "default_inference_iou_thres",
+    "title": "默认IoU阈值",
+    "type": "float",
+    "min": 0.01,
+    "max": 1.0,
+    "default": 0.45,
+    "value": 0.45,
+    "description": "推理预览的默认NMS IoU阈值。"
+  },
+  {
+    "key": "default_infer_interval",
+    "title": "默认推理节拍",
+    "type": "int",
+    "min": 100,
+    "max": 10000,
+    "default": 1000,
+    "value": 1000,
+    "description": "推理预览的默认节拍间隔（毫秒）。"
+  },
+  {
+    "key": "shortcuts",
+    "title": "快捷键配置",
+    "type": "object",
+    "default": {},
+    "value": {},
+    "description": "自定义快捷键映射，格式为 {action_id: key}。"
+  },
+  {
+    "key": "enabled_interactive_models",
+    "value": [
+      "sam2_onnx_l",
+      "sam2_onnx_b",
+      "mobilesam_onnx"
+    ]
+  },
+  {
+    "key": "enabled_auto_models",
+    "value": [
+      "sam3",
+      "trtsam3"
+    ]
+  },
+  {
+    "key": "export_format",
+    "value": "yoloseg"
+  },
+  {
+    "key": "current_project_name",
+    "value": "test_agent_fixture"
+  },
+  {
+    "key": "output_dir",
+    "value": "d:\\PycharmProjects\\Work\\VisionLeeQT\\projects\\test_agent_fixture"
+  },
+  {
+    "key": "last_idx_1084ce65",
+    "value": 0
+  },
+  {
+    "key": "last_opened_dir",
+    "value": "d:\\PycharmProjects\\Work\\VisionLeeQT\\projects\\test_agent_fixture"
+  },
+  {
+    "key": "ai_api_key",
+    "title": "AI API Key",
+    "type": "string",
+    "default": "",
+    "value": "",
+    "description": "LLM 服务商的 API Key。支持 OpenAI、DeepSeek、Moonshot 等兼容接口。"
+  },
+  {
+    "key": "ai_base_url",
+    "title": "AI Base URL",
+    "type": "string",
+    "default": "https://api.deepseek.com",
+    "value": "https://apihub.agnes-ai.com/v1/chat/completions",
+    "description": "LLM API 的 Base URL。DeepSeek: https://api.deepseek.com，Moonshot: https://api.moonshot.cn/v1，OpenAI: https://api.openai.com/v1"
+  },
+  {
+    "key": "ai_model",
+    "title": "AI 模型",
+    "type": "string",
+    "default": "deepseek-chat",
+    "value": "agnes-2.0-flash",
+    "description": "使用的 LLM 模型名称。如 deepseek-chat、gpt-4o、moonshot-v1-8k 等。"
+  },
+  {
+    "key": "ai_providers",
+    "title": "AI 提供商",
+    "type": "object",
+    "value": {
+      "providers": [
+        {
+          "id": "agnes",
+          "name": "Agnes",
+          "base_url": "https://apihub.agnes-ai.com/v1/chat/completions",
+          "api_key": "",
+          "models": [
+            {
+              "name": "agnes-2.0-flash",
+              "max_input_tokens": 16384,
+              "max_output_tokens": 4096,
+              "supports_image": true
+            }
+          ],
+          "default_model": "agnes-2.0-flash"
+        },
+        {
+          "id": "p38dca42d",
+          "name": "opencode",
+          "base_url": "https://api.deepseek.com",
+          "api_key": "",
+          "models": [],
+          "default_model": ""
+        }
+      ],
+      "active_provider": "agnes"
+    },
+    "description": "按提供商分组的多模型配置。每个模型可独立配置输入/输出 token 上限与是否支持图像。"
+  },
+  {
+    "key": "enabled_plain_models",
+    "value": []
+  },
+  {
+    "key": "intent_analysis_enabled",
+    "value": "关闭"
+  },
+  {
+    "key": "intent_analysis_cooldown",
+    "title": "意图分析冷却时间",
+    "type": "float",
+    "min": 0,
+    "max": 300,
+    "default": 30,
+    "value": 30.0,
+    "description": "两次意图分析（LLM 调用）之间的最小时间间隔（秒）。值越小分析越频繁，会增加 LLM 调用次数与费用。推荐 30。"
+  },
+  {
+    "key": "last_idx_6d78a1f5",
+    "value": 11
+  },
+  {
+    "key": "last_idx_52335089",
+    "value": 0
+  },
+  {
+    "key": "last_idx_9a0fbef7",
+    "value": 0
+  },
+  {
+    "key": "agent_solo_mode",
+    "value": "关闭"
+  },
+  {
+    "key": "custom_models",
+    "title": "自定义模型",
+    "type": "object",
+    "value": {
+      "interactive": [],
+      "auto": [
+        {
+          "name": "sam3-finetuned",
+          "category": "sam3",
+          "weight_path": "d:\\PycharmProjects\\Work\\VisionLeeQT\\weights\\sam3\\sam3.pt"
+        }
+      ],
+      "plain": [],
+      "refine": []
+    }
+  },
+  {
+    "key": "last_idx_1897c1af",
+    "value": 7
+  },
+  {
+    "key": "last_idx_5c4a6348",
+    "value": 0
+  },
+  {
+    "key": "last_idx_0e1e8dbf",
+    "value": 1
+  },
+  {
+    "key": "last_idx_fdf22221",
+    "value": 0
+  },
+  {
+    "key": "plain_model",
+    "value": "yolo26s"
+  }
+]

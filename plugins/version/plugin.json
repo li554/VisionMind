@@ -1,0 +1,1 @@
+{"id": "version", "name": "版本管理", "version": "1.0.0", "description": "标注版本管理与数据集导出", "icon": "HISTORY", "order": 3, "dependencies": ["dashboard"], "entry": "plugin.py:VersionPlugin"}

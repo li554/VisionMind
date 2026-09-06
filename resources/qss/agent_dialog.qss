@@ -1,0 +1,647 @@
+/* ============================================================================
+   AgentDialog QSS — 暗色主题（默认）
+   颜色与 resources/qss/dark_theme.qss 对齐：背景 #252525、accent #2563eb、hover #3b82f6
+   ============================================================================ */
+
+#AgentDialog, #AgentSidebar {
+    background-color: #252525;
+    border: none;
+}
+
+/* ---------- Resize Handle ---------- */
+#ResizeHandle {
+    background: transparent;
+    border: none;
+}
+#ResizeHandle:hover {
+    background: rgba(37, 99, 235, 0.25);
+}
+#ResizeHandle[active="true"] {
+    background: #2563eb;
+}
+#ResizeBadge {
+    background: #1a1a1a;
+    border: 1px solid #2563eb;
+    border-radius: 6px;
+    color: #2563eb;
+    font-size: 11px;
+    padding: 3px 10px;
+}
+
+/* ---------- Sidebar Header ---------- */
+#SidebarHeader {
+    background: #252525;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+#AgentIcon {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 #2563eb, stop:1 #60a5fa);
+    border-radius: 8px;
+    font-size: 14px;
+    color: #ffffff;
+}
+#AgentTitle {
+    font-size: 14px;
+    font-weight: 600;
+    color: #e5e7eb;
+}
+#ModelBadge {
+    font-size: 11px;
+    color: #9ca3af;
+    background: rgba(255, 255, 255, 0.05);
+    padding: 2px 8px;
+    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+#HeaderBtn {
+    background: transparent;
+    color: #9ca3af;
+    border: none;
+    border-radius: 6px;
+    font-size: 16px;
+}
+#HeaderBtn:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: #e5e7eb;
+}
+
+/* ---------- Session Panel ---------- */
+#SessionPanel {
+    background-color: #1a1a1a;
+    border-right: 1px solid #333333;
+}
+#SessionPanelHeader {
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    background: #1a1a1a;
+}
+#NewSessionBtn {
+    margin: 8px;
+    padding: 8px;
+    background: rgba(37, 99, 235, 0.15);
+    border: 1px dashed rgba(37, 99, 235, 0.4);
+    border-radius: 8px;
+    color: #2563eb;
+    font-size: 13px;
+    text-align: center;
+}
+#NewSessionBtn:hover {
+    background: rgba(37, 99, 235, 0.25);
+}
+#SessionItem {
+    background: #1a1a1a;
+    border: none;
+    border-radius: 4px;
+    margin-bottom: 2px;
+    padding: 6px 4px;
+}
+#SessionItem:hover {
+    background: rgba(255, 255, 255, 0.06);
+}
+#SessionItem[active="true"] {
+    background: rgba(255, 255, 255, 0.10);
+    border-left: 3px solid #2563eb;
+}
+#SessionDelBtn {
+    background: transparent;
+    border: none;
+    color: #4b5563;
+    font-size: 14px;
+    font-weight: bold;
+    border-radius: 10px;
+}
+#SessionDelBtn:hover {
+    color: #ef4444;
+    background: rgba(239, 68, 68, 0.20);
+}
+#SessionListScroll {
+    background: transparent;
+    border: none;
+}
+#SessionListScroll > QWidget {
+    background: #1a1a1a;
+}
+
+/* ---------- Messages Area ---------- */
+#MessagesArea {
+    background: transparent;
+    border: none;
+}
+#MessagesContainer {
+    background: transparent;
+}
+
+/* Welcome screen */
+#WelcomeScreen { background: transparent; }
+#WelcomeLogo {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 #2563eb, stop:0.5 #60a5fa, stop:1 #34d399);
+    border-radius: 20px;
+    font-size: 32px;
+    color: #ffffff;
+}
+#WelcomeTitle { font-size: 20px; font-weight: 600; color: #e5e7eb; }
+#WelcomeDesc { color: #9ca3af; font-size: 13px; }
+#QuickAction {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+}
+#QuickAction:hover {
+    border: 1px solid #2563eb;
+    background: rgba(37, 99, 235, 0.15);
+}
+
+/* ---------- Message bubbles ---------- */
+#MessageBubble { background: transparent; border: none; }
+#AssistantAvatar {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 #2563eb, stop:1 #60a5fa);
+    border-radius: 13px;
+    color: #ffffff;
+    font-size: 12px;
+}
+#UserAvatar {
+    background: #2b2b2b;
+    border-radius: 13px;
+    color: #ffffff;
+    font-size: 12px;
+}
+#MsgContent {
+    padding: 10px 14px;
+    border-radius: 12px;
+    font-size: 13px;
+    color: #e5e7eb;
+}
+#MessageBubble #MsgBody:only-child #MsgContent {
+    /* placeholder selector */
+}
+/* assistant bubble (left) */
+#MessageBubble #MsgContent {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+/* 不能精确区分 user/assistant 的左侧圆角，统一处理 */
+#MsgMeta { font-size: 11px; color: #6b7280; padding: 0 4px; }
+
+/* Note: user vs assistant bubble bg 通过代码动态 styleSheet 设置（见下方强制定制项），
+   这里使用基于祖先 Avatar object name 触发不到，因此使用属性选择需在代码层覆盖。
+   为保证视觉差异，这里再次声明整体 user bubble bg： */
+
+/* 由于 QSS 不易按子控 objectName 反向追溯父类样式，
+   message bubble 背景在 MessageBubble._build_body 内已通过动态 styleSheet 处理。 */
+
+/* ---------- Thinking Indicator ---------- */
+#ThinkingDots {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    border-top-left-radius: 4px;
+}
+
+/* ---------- Bash approval card ---------- */
+#BashApprovalCard {
+    background: rgba(245, 158, 11, 0.08);
+    border: 1px solid rgba(245, 158, 11, 0.35);
+    border-radius: 8px;
+}
+#BashApprovalTitle {
+    font-size: 13px;
+    font-weight: 600;
+    color: #f59e0b;
+}
+#BashApprovalReason {
+    font-size: 12px;
+    color: #e5e7eb;
+}
+#BashApproveBtn {
+    background: #2563eb;
+    color: #ffffff;
+    border: none;
+    border-radius: 5px;
+    padding: 2px 14px;
+    font-size: 12px;
+}
+#BashApproveBtn:hover { background: #3b82f6; }
+#BashApproveBtn:disabled { background: rgba(255, 255, 255, 0.08); color: #6b7280; }
+#BashDenyBtn {
+    background: rgba(239, 68, 68, 0.15);
+    color: #ef4444;
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    border-radius: 5px;
+    padding: 2px 14px;
+    font-size: 12px;
+}
+#BashDenyBtn:hover { background: rgba(239, 68, 68, 0.3); }
+#BashDenyBtn:disabled { background: transparent; color: #6b7280; border-color: rgba(255,255,255,0.1); }
+#BashApprovalStatus { font-size: 12px; color: #9ca3af; }
+
+/* ---------- Tool call block ---------- */
+#ToolCallBlock {
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.15);
+}
+#ToolCallHeader {
+    background: transparent;
+    border: none;
+}
+#ToolCallHeader:hover {
+    background: rgba(255, 255, 255, 0.03);
+}
+#ToolStatusIcon {
+    border-radius: 9px;
+    font-size: 10px;
+    background: rgba(37, 99, 235, 0.15);
+    color: #2563eb;
+}
+#ToolStatusIcon[status="running"] { background: rgba(37, 99, 235, 0.15); color: #2563eb; }
+#ToolStatusIcon[status="success"] { background: rgba(16, 185, 129, 0.15); color: #10b981; }
+#ToolStatusIcon[status="error"]   { background: rgba(239, 68, 68, 0.15); color: #ef4444; }
+#ToolStatusIcon[status="planning"]{ background: rgba(245, 158, 11, 0.15); color: #f59e0b; }
+#ToolName { font-size: 12px; font-weight: 600; color: #e5e7eb; }
+#ToolDuration { font-size: 11px; color: #6b7280; }
+#ToolChevron { font-size: 12px; color: #6b7280; }
+#ToolCallContent { border-top: 1px solid rgba(255, 255, 255, 0.1); }
+#ToolSectionLabel {
+    font-size: 10px;
+    color: #6b7280;
+    letter-spacing: 0.5px;
+}
+#ToolCode {
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 6px;
+    color: #9ca3af;
+    padding: 6px 8px;
+    font-size: 11px;
+}
+
+/* Step items */
+#ToolStepItem {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+    font-size: 11px;
+    color: #9ca3af;
+}
+#StepNum { color: #2563eb; font-weight: 600; }
+#StepStatus[status="done"] { color: #10b981; }
+#StepStatus[status="active"] { color: #2563eb; }
+#StepStatus[status="pending"] { color: #6b7280; }
+#ToolStepItem[active="true"] {
+    border: 1px solid rgba(37, 99, 235, 0.3);
+    background: rgba(37, 99, 235, 0.15);
+}
+#ToolStepItem[done="true"] {
+    /* done step dimmed */
+}
+
+/* ---------- Execution status bar ---------- */
+#ExecutionStatusBar {
+    background: rgba(37, 99, 235, 0.15);
+    border-top: 1px solid rgba(37, 99, 235, 0.2);
+    color: #2563eb;
+    font-size: 12px;
+}
+#ExecStatusText { color: #2563eb; font-size: 12px; }
+#StopBtn {
+    background: rgba(239, 68, 68, 0.15);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    border-radius: 6px;
+    color: #ef4444;
+    font-size: 11px;
+    padding: 2px 10px;
+}
+#StopBtn:hover {
+    background: rgba(239, 68, 68, 0.3);
+}
+
+/* ---------- Input Area ---------- */
+#InputArea {
+    background: #252525;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+#InputWrapper {
+    background: rgba(0, 0, 0, 0.2);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+}
+#InputWrapper:focus-within {
+    border: 1px solid #2563eb;
+}
+#InputBtn {
+    background: transparent;
+    border: none;
+    color: #6b7280;
+    border-radius: 6px;
+    font-size: 16px;
+}
+#InputBtn:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: #e5e7eb;
+}
+#MessageInput {
+    background: transparent;
+    border: none;
+    color: #e5e7eb;
+    font-size: 13px;
+    padding: 8px 0;
+    selection-background-color: #2563eb;
+}
+#MessageInput:focus { border: none; }
+#SendBtn {
+    background: #2563eb;
+    color: #ffffff;
+    border: none;
+    border-radius: 17px;
+    font-size: 16px;
+    font-weight: bold;
+}
+#SendBtn:hover {
+    background: #3b82f6;
+}
+#SendBtn:disabled {
+    background: rgba(255, 255, 255, 0.05);
+    color: #6b7280;
+}
+#ModelSelector {
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 6px;
+    color: #9ca3af;
+    font-size: 11px;
+    padding: 3px 8px;
+    min-width: 100px;
+}
+#ModelSelector:hover {
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+}
+#ModelSelector::drop-down {
+    border: none;
+    width: 16px;
+    subcontrol-position: right center;
+    subcontrol-origin: padding;
+}
+#ModelSelector::down-arrow {
+    color: #9ca3af;
+    font-size: 8px;
+}
+#ModelSelector QAbstractItemView {
+    background: #2b2b2b;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 6px;
+    color: #e5e7eb;
+    font-size: 11px;
+    padding: 4px;
+    outline: none;
+}
+#ModelSelector QAbstractItemView::item {
+    padding: 4px 10px;
+    border-radius: 4px;
+}
+#ModelSelector QAbstractItemView::item:hover {
+    background: rgba(37, 99, 235, 0.15);
+}
+#ModelSelector QAbstractItemView::item:selected {
+    background: rgba(37, 99, 235, 0.25);
+    color: #e5e7eb;
+}
+#InputHint { font-size: 11px; color: #6b7280; }
+
+/* Highlight focus glow via QGraphicsDropShadowEffect (set in code) */
+
+/* Scrollbar styling */
+#MessagesArea QScrollBar:vertical,
+#SessionListScroll QScrollBar:vertical {
+    background: transparent;
+    width: 5px;
+    margin: 0;
+}
+#MessagesArea QScrollBar:horizontal {
+    background: transparent;
+    height: 5px;
+    margin: 0;
+}
+#MessagesArea QScrollBar::handle:vertical,
+#SessionListScroll QScrollBar::handle:vertical {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+    min-height: 20px;
+}
+#MessagesArea QScrollBar::handle:horizontal {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 2px;
+    min-width: 20px;
+}
+#MessagesArea QScrollBar::handle:vertical:hover,
+#SessionListScroll QScrollBar::handle:vertical:hover {
+    background: rgba(255, 255, 255, 0.2);
+}
+#MessagesArea QScrollBar::add-line:vertical,
+#MessagesArea QScrollBar::sub-line:vertical,
+#SessionListScroll QScrollBar::add-line:vertical,
+#SessionListScroll QScrollBar::sub-line:vertical {
+    height: 0;
+    background: transparent;
+}
+
+/* === LIGHT THEME === */
+#AgentDialog, #AgentSidebar {
+    background-color: #ffffff;
+}
+#SidebarHeader {
+    background: #ffffff;
+    border-bottom: 1px solid #e5e5ea;
+}
+#AgentTitle { color: #1d1d1f; }
+#ModelBadge {
+    color: #6e6e73;
+    background: rgba(0, 0, 0, 0.04);
+    border: 1px solid #e5e5ea;
+}
+#HeaderBtn { color: #6e6e73; }
+#HeaderBtn:hover {
+    background: rgba(0, 0, 0, 0.05);
+    color: #1d1d1f;
+}
+#SessionPanel {
+    background: #f8f8f8;
+    border-right: 1px solid #e5e5ea;
+}
+#SessionPanelHeader { background: #f8f8f8; border-bottom: 1px solid #e5e5ea; }
+#SessionListScroll {
+    background: transparent;
+    border: none;
+}
+#SessionListScroll > QWidget {
+    background: #f8f8f8;
+}
+#NewSessionBtn {
+    background: rgba(37, 99, 235, 0.08);
+    border: 1px dashed rgba(37, 99, 235, 0.45);
+    color: #1d4ed8;
+}
+#NewSessionBtn:hover { background: rgba(37, 99, 235, 0.15); }
+#SessionItem {
+    background: #f8f8f8;
+    border: none;
+    border-radius: 4px;
+    margin-bottom: 2px;
+    padding: 6px 4px;
+}
+#SessionItem:hover { background: rgba(0, 0, 0, 0.04); }
+#SessionItem[active="true"] {
+    background: rgba(0, 0, 0, 0.08);
+    border-left: 3px solid #2563eb;
+}
+#SessionDelBtn {
+    background: transparent;
+    border: none;
+    color: #9ca3af;
+    font-size: 14px;
+    font-weight: bold;
+    border-radius: 10px;
+}
+#SessionDelBtn:hover {
+    color: #dc2626;
+    background: rgba(220, 38, 38, 0.12);
+}
+#WelcomeTitle { color: #1d1d1f; }
+#WelcomeDesc { color: #6e6e73; }
+#QuickAction {
+    background: rgba(0, 0, 0, 0.03);
+    border: 1px solid #e5e5ea;
+}
+#QuickAction:hover {
+    border: 1px solid #2563eb;
+    background: rgba(37, 99, 235, 0.08);
+}
+#MsgContent { color: #1d1d1f; }
+#UserAvatar { background: #e5e5ea; color: #1d1d1f; border-radius: 13px; }
+#AssistantAvatar {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 #2563eb, stop:1 #60a5fa);
+    border-radius: 13px;
+    color: #ffffff;
+    font-size: 12px;
+}
+#MsgMeta { color: #9ca3af; }
+#ToolCallBlock {
+    background: rgba(0, 0, 0, 0.04);
+    border: 1px solid #e5e5ea;
+}
+#ToolCallHeader:hover { background: rgba(0, 0, 0, 0.03); }
+#ToolCallContent { border-top: 1px solid #e5e5ea; }
+#ToolCode {
+    background: rgba(0, 0, 0, 0.06);
+    border: 1px solid #e5e5ea;
+    color: #4b5563;
+}
+#ToolStepItem {
+    background: rgba(0, 0, 0, 0.03);
+    border: 1px solid #e5e5ea;
+    color: #4b5563;
+}
+#ToolStepItem[active="true"] {
+    border: 1px solid rgba(37, 99, 235, 0.3);
+    background: rgba(37, 99, 235, 0.10);
+}
+#ExecutionStatusBar {
+    background: rgba(37, 99, 235, 0.08);
+    border-top: 1px solid rgba(37, 99, 235, 0.2);
+}
+#ExecStatusText { color: #1d4ed8; }
+#InputArea {
+    background: #ffffff;
+    border-top: 1px solid #e5e5ea;
+}
+#InputWrapper {
+    background: rgba(0, 0, 0, 0.03);
+    border: 1px solid #e5e5ea;
+    border-radius: 12px;
+}
+#InputWrapper:focus-within { border: 1px solid #2563eb; }
+#InputBtn { color: #6e6e73; }
+#InputBtn:hover { background: rgba(0, 0, 0, 0.05); color: #1d1d1f; }
+#MessageInput { color: #1d1d1f; selection-background-color: #2563eb; }
+#SendBtn { background: #2563eb; color: #ffffff; }
+#SendBtn:hover { background: #1d4ed8; }
+#SendBtn:disabled { background: rgba(0, 0, 0, 0.06); color: #9ca3af; }
+#ModelSelector {
+    background: transparent;
+    border: 1px solid #e5e5ea;
+    color: #6e6e73;
+}
+#ModelSelector:hover { background: rgba(0, 0, 0, 0.05); }
+#ModelSelector QAbstractItemView {
+    background: #ffffff;
+    border: 1px solid #e5e5ea;
+    border-radius: 6px;
+    color: #1d1d1f;
+    font-size: 11px;
+    padding: 4px;
+    outline: none;
+}
+#ModelSelector QAbstractItemView::item {
+    padding: 4px 10px;
+    border-radius: 4px;
+}
+#ModelSelector QAbstractItemView::item:hover {
+    background: rgba(37, 99, 235, 0.08);
+}
+#ModelSelector QAbstractItemView::item:selected {
+    background: rgba(37, 99, 235, 0.15);
+    color: #1d1d1f;
+}
+#InputHint { color: #9ca3af; }
+#ResizeBadge {
+    background: #ffffff;
+    border: 1px solid #2563eb;
+    color: #1d4ed8;
+}
+#ResizeHandle[active="true"] { background: #2563eb; }
+#ToolName { color: #1d1d1f; }
+#ToolDuration { color: #6b7280; }
+#ToolChevron { color: #6b7280; }
+#ToolSectionLabel { color: #9ca3af; }
+#ThinkingDots {
+    background: rgba(0, 0, 0, 0.04);
+    border: 1px solid #e5e5ea;
+}
+#StopBtn {
+    background: rgba(239, 68, 68, 0.10);
+    border: 1px solid rgba(239, 68, 68, 0.35);
+    color: #c53030;
+}
+#StopBtn:hover { background: rgba(239, 68, 68, 0.20); }
+
+/* ---------- Bash approval card (light) ---------- */
+#BashApprovalCard {
+    background: rgba(245, 158, 11, 0.08);
+    border: 1px solid rgba(217, 119, 6, 0.35);
+}
+#BashApprovalTitle { color: #b45309; }
+#BashApprovalReason { color: #1d1d1f; }
+#BashApproveBtn { background: #2563eb; color: #ffffff; }
+#BashApproveBtn:hover { background: #1d4ed8; }
+#BashApproveBtn:disabled { background: rgba(0, 0, 0, 0.06); color: #9ca3af; }
+#BashDenyBtn {
+    background: rgba(239, 68, 68, 0.10);
+    color: #dc2626;
+    border: 1px solid rgba(239, 68, 68, 0.35);
+}
+#BashDenyBtn:hover { background: rgba(239, 68, 68, 0.20); }
+#BashDenyBtn:disabled { background: transparent; color: #9ca3af; border-color: rgba(0,0,0,0.1); }
+#BashApprovalStatus { color: #6e6e73; }
+#MessagesArea QScrollBar::handle:vertical,
+#SessionListScroll QScrollBar::handle:vertical {
+    background: rgba(0, 0, 0, 0.2);
+}
+#MessagesArea QScrollBar::handle:horizontal {
+    background: rgba(0, 0, 0, 0.2);
+}
+#MessagesArea QScrollBar::handle:vertical:hover,
+#SessionListScroll QScrollBar::handle:vertical:hover {
+    background: rgba(0, 0, 0, 0.35);
+}

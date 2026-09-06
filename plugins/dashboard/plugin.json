@@ -1,0 +1,10 @@
+{
+    "id": "dashboard",
+    "name": "项目大厅",
+    "version": "1.0.0",
+    "description": "项目创建、导入与切换",
+    "icon": "HOME",
+    "order": 1,
+    "dependencies": [],
+    "entry": "plugin.py:DashboardPlugin"
+}

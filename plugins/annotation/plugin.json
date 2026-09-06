@@ -1,0 +1,10 @@
+{
+    "id": "annotation",
+    "name": "手动标注",
+    "version": "1.0.0",
+    "description": "图像手动标注与交互式分割",
+    "icon": "TAG",
+    "order": 2,
+    "dependencies": ["dashboard"],
+    "entry": "plugin.py:AnnotationPlugin"
+}

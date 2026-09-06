@@ -1,0 +1,74 @@
+[
+  {
+    "key": "auto_save_enabled",
+    "title": "自动保存",
+    "type": "combo",
+    "options": ["打开", "关闭"],
+    "default": "打开",
+    "description": "开启后每次完成标注操作时自动保存。"
+  },
+  {
+    "key": "ai_assistance_enabled",
+    "title": "AI辅助标注",
+    "type": "combo",
+    "options": ["打开", "关闭"],
+    "default": "打开",
+    "description": "启用AI辅助标注功能。"
+  },
+  {
+    "key": "default_output_dir",
+    "title": "默认保存路径",
+    "type": "string",
+    "default": "",
+    "description": "标注结果的默认保存目录，留空则使用项目默认路径。"
+  },
+  {
+    "key": "default_line_width",
+    "title": "默认线宽",
+    "type": "int",
+    "min": 1,
+    "max": 10,
+    "default": 2,
+    "description": "标注框的默认线宽（像素）。"
+  },
+  {
+    "key": "default_line_color",
+    "title": "默认线色",
+    "type": "string",
+    "default": "#00ff00",
+    "description": "标注框的默认颜色，支持十六进制格式如 #00ff00。"
+  },
+  {
+    "key": "default_fill_opacity",
+    "title": "默认填充透明度",
+    "type": "int",
+    "min": 0,
+    "max": 100,
+    "default": 30,
+    "description": "标注区域填充的默认透明度（0-100）。0为完全透明，100为完全不透明。"
+  },
+  {
+    "key": "enhance_default_on",
+    "title": "图像增强默认开启",
+    "type": "combo",
+    "options": ["关闭", "打开"],
+    "default": "关闭",
+    "description": "启动时是否默认开启图像增强视图。"
+  },
+  {
+    "key": "left_panel_visible",
+    "title": "左栏显示",
+    "type": "combo",
+    "options": ["显示", "隐藏"],
+    "default": "显示",
+    "description": "标注界面左侧面板的默认显示状态。"
+  },
+  {
+    "key": "right_panel_visible",
+    "title": "右栏显示",
+    "type": "combo",
+    "options": ["显示", "隐藏"],
+    "default": "显示",
+    "description": "标注界面右侧面板的默认显示状态。"
+  }
+]
