@@ -1017,11 +1017,11 @@
   {
     "key": "lru_window_size",
     "title": "LRU 工具窗口大小",
-    "description": "lru 策略每轮暴露的 action 工具数量上限；0=不裁剪（保持原行为）。保底工具（LRU 激活 + 当前指令关键词命中）永不被裁剪，超出窗口时窗口自动扩张。",
+    "description": "lru 策略每轮暴露的 action 工具数量上限；0=不裁剪，默认 16。保底工具（LRU 激活 + 与指令强相关的工具）永不被裁剪，超出窗口时窗口自动扩张。",
     "type": "int",
     "min": 0,
     "max": 200,
-    "default": 0,
-    "value": 0
+    "default": 16,
+    "value": 16
   }
 ]

@@ -308,7 +308,7 @@ class LRUStrategy(ToolStrategy):
     2. 由 get_active_domains 计算活跃分类（关键词 + 当前界面 + 最近分类 + 导航/全局）
     3. 收集活跃分类下的 scope="agent" action（完整 schema）
     4. 附加 LRU 激活队列中的工具（跨界面多轮记忆），即使其分类不在活跃集
-    5. 可选「窗口」：以 window_size 为上限裁剪 action 工具数量（0 = 不裁剪）
+    5. 「窗口」：以 window_size 为上限裁剪 action 工具数量（0 = 不裁剪；默认 16）
 
     窗口口径（避免重演 lru 因漏掉 version 分类而整条任务失败的旧问题）：
     - 保底项：
@@ -324,17 +324,20 @@ class LRUStrategy(ToolStrategy):
       activate_tools 激活，下一轮即进入保底层重新可见
 
     窗口大小配置优先级：构造参数/set_window_size 覆盖 > core.json 的
-    `lru_window_size` > 环境变量 `VISIONLEE_LRU_WINDOW_SIZE` > 0（不裁剪）。
+    `lru_window_size` > 环境变量 `VISIONLEE_LRU_WINDOW_SIZE` > 16（默认）。
+    0 = 不裁剪（想回到全量暴露就显式设 0 / `lru@0`）。
     """
 
     name = "lru"
 
-    #: core.json 中持久化窗口大小的键（0 = 不裁剪，保持历史行为）
+    #: core.json 中持久化窗口大小的键（0 = 不裁剪）
     SETTING_KEY = "lru_window_size"
     #: 环境变量覆盖（便于实验不改配置直接对比）
     ENV_KEY = "VISIONLEE_LRU_WINDOW_SIZE"
     #: 自动扩张上限：非保底槽位的上限（保底项不受此限）
     DEFAULT_MAX_WINDOW_SIZE = 64
+    #: 默认窗口大小：核心配置缺失时使用（实测 16 是"上下文/成功率"的拐点）
+    DEFAULT_WINDOW_SIZE = 16
 
     def __init__(self, manager, window_size=None, max_window_size=None,
                  protect_min_score=None):
@@ -354,7 +357,7 @@ class LRUStrategy(ToolStrategy):
     # ---- 窗口配置 --------------------------------------------------------
 
     def configured_window_size(self) -> int:
-        """当前生效的窗口大小（0 = 不裁剪）。"""
+        """当前生效的窗口大小（0 = 不裁剪；无任何配置时用 DEFAULT_WINDOW_SIZE）。"""
         if self._window_override is not None:
             return max(0, int(self._window_override))
         val = self._read_setting()
@@ -363,7 +366,7 @@ class LRUStrategy(ToolStrategy):
         env = (os.environ.get(self.ENV_KEY) or "").strip()
         if env.lstrip("+-").isdigit():
             return max(0, int(env))
-        return 0
+        return self.DEFAULT_WINDOW_SIZE
 
     def _read_setting(self):
         """读 core.json 的窗口设置；缺失/读取失败返回 None。"""
@@ -376,7 +379,7 @@ class LRUStrategy(ToolStrategy):
         except Exception as e:
             if not self._setting_warned:
                 self._setting_warned = True
-                print(f"[ToolStrategy] lru 读取窗口设置失败（按不裁剪处理）: {e}")
+                print(f"[ToolStrategy] lru 读取窗口设置失败（按默认 {self.DEFAULT_WINDOW_SIZE} 处理）: {e}")
             return None
 
     def set_window_size(self, size, persist=True) -> int:
