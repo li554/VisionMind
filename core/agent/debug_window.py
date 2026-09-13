@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 )
 from qfluentwidgets import (
     PushButton, PrimaryPushButton, StrongBodyLabel,
-    CaptionLabel, InfoBar
+    CaptionLabel, InfoBar, SpinBox
 )
 
 
@@ -76,7 +76,7 @@ class SystemPromptDebugDialog(QDialog):
 
         # 工具管理 Tab
         self._tool_manager_edit = self._make_edit()
-        self._tabs.addTab(self._tool_manager_edit, "工具管理")
+        self._tabs.addTab(self._make_tool_manager_tab(), "工具管理")
 
         # 按钮区域
         btn_layout = QHBoxLayout()
@@ -172,6 +172,19 @@ class SystemPromptDebugDialog(QDialog):
             lines.append(f"当前界面: {current_interface or '(未检测)'}")
             lines.append(f"活跃分类: {', '.join(active_domains) if active_domains else '(无)'}")
             lines.append(f"显式激活工具: {', '.join(activated_tools) if activated_tools else '(无)'}")
+
+            # lru 窗口（0 = 不裁剪）
+            try:
+                window = tm.get_lru_window_size()
+                stats = tm.get_window_stats()
+                lines.append(
+                    f"LRU 工具窗口: {window if window > 0 else '∞ (不裁剪)'}"
+                    + (f"（实际 {stats.get('window_target')}，"
+                       f"候选 {stats.get('candidates')}，裁剪 {stats.get('dropped')}）"
+                       if stats else "")
+                )
+            except Exception:
+                pass
 
             recent = getattr(agent, '_recent_tool_categories', [])
             lines.append(f"最近使用分类: {', '.join(recent) if recent else '(无)'}")
@@ -307,6 +320,60 @@ class SystemPromptDebugDialog(QDialog):
     # 工具管理 Tab
     # ------------------------------------------------------------------
 
+    def _make_tool_manager_tab(self) -> QWidget:
+        """工具管理 Tab：LRU 窗口大小调节行 + 工具分类详情"""
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 8, 0, 0)
+        layout.setSpacing(8)
+
+        row = QHBoxLayout()
+        row.addWidget(StrongBodyLabel("LRU 工具窗口"))
+        self._window_spin = SpinBox()
+        self._window_spin.setRange(0, 200)
+        self._window_spin.setFixedWidth(90)
+        self._window_spin.setToolTip("lru 策略每轮暴露的 action 工具数量上限；0 = 不裁剪")
+        row.addWidget(self._window_spin)
+        row.addWidget(CaptionLabel("0 = 不裁剪；保底工具（激活 + 指令命中）永不裁剪"))
+        apply_btn = PushButton("应用")
+        apply_btn.clicked.connect(self._apply_window_size)
+        row.addWidget(apply_btn)
+        row.addStretch()
+        layout.addLayout(row)
+
+        layout.addWidget(self._tool_manager_edit, 1)
+        return container
+
+    def _apply_window_size(self):
+        """把窗口大小写入 core.json 并刷新工具面（Agent 忙时下一轮生效）。"""
+        agent = self._find_agent()
+        tm = getattr(agent, '_tool_manager', None) if agent else None
+        if tm is None:
+            InfoBar.warning("无法应用", "工具管理器未就绪", parent=self)
+            return
+        size = int(self._window_spin.value())
+        try:
+            applied = tm.set_lru_window_size(size, persist=True)
+        except Exception as e:
+            InfoBar.error("应用失败", f"{type(e).__name__}: {e}", parent=self)
+            return
+        rebuilt = False
+        try:
+            if agent is not None and not agent.is_busy() and hasattr(agent, '_update_tools'):
+                agent._update_tools(
+                    user_input="",
+                    recent_categories=list(getattr(agent, '_recent_tool_categories', []) or []),
+                )
+                rebuilt = True
+        except Exception as e:
+            print(f"[DebugWindow] 应用窗口后重建工具面失败（下一轮自动生效）: {e}")
+        tip = f"lru 窗口大小 = {applied}" + ("（不裁剪）" if applied <= 0 else "")
+        if rebuilt:
+            InfoBar.success("已应用", tip, parent=self)
+        else:
+            InfoBar.info("已保存", f"{tip}；Agent 正在执行，将在下一轮生效", parent=self)
+        self.refresh()
+
     def _refresh_tool_manager(self, agent):
         from core.common.action_registry import ActionRegistry
         from core.agent.dynamic_tool_manager import ALL_CATEGORIES  # noqa: F401
@@ -354,6 +421,25 @@ class SystemPromptDebugDialog(QDialog):
         lines.append(f"当前界面: {current_interface or '(未检测)'}")
         lines.append(f"活跃分类: {', '.join(active_domains) if active_domains else '(无)'}")
         lines.append(f"激活工具(LRU): {', '.join(activated_tools) if activated_tools else '(无)'}")
+
+        # lru 窗口状态（含最近一次构建的裁剪统计）
+        if tm is not None:
+            try:
+                self._window_spin.setValue(int(tm.get_lru_window_size()))
+            except Exception:
+                pass
+            try:
+                strategy = tm.get_strategy()
+                status_fn = getattr(strategy, "window_status_text", None)
+                if callable(status_fn):
+                    window_text = status_fn()
+                else:
+                    window_text = (f"== LRU 工具窗口 ==\n"
+                                   f"当前策略 {tm.strategy_name} 不使用窗口")
+                lines.append("")
+                lines.append(window_text)
+            except Exception as e:
+                lines.append(f"(窗口状态获取失败: {type(e).__name__}: {e})")
         lines.append("")
 
         # 激活工具集合（用于判断 [激活] 标记）

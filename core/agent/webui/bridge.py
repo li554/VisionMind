@@ -96,7 +96,7 @@ class _BridgeObject(QObject):
     toolRemoved = Signal(str)               # id
     execStatus = Signal(str)                # 空串=隐藏
     cleared = Signal()
-    approvalRequested = Signal(str, str)    # id, reason
+    approvalRequested = Signal(str, str, str)    # id, tool, reason
     askUserRequested = Signal(str, str)     # id, questionsJson
     referenceAdded = Signal(str)            # 「添加到对话」引用文本
     planBannerChanged = Signal(bool)        # 计划模式横幅开关
@@ -508,13 +508,16 @@ class WebAgentSidebar(QFrame):
     def new_session(self):
         self.clear_messages()
 
-    # ---------------- bash 解锁审批 ----------------
+    # ---------------- 工具解锁审批 ----------------
 
     def request_bash_approval(self, reason: str, respond) -> None:
+        self._request_tool_approval("bash", reason, respond)
+
+    def request_tool_approval(self, tool: str, reason: str, respond) -> None:
         self._approval_seq += 1
-        req_id = f"bash-{self._approval_seq}"
+        req_id = f"approval-{self._approval_seq}"
         self._pending_approvals[req_id] = respond
-        self._emit(self._bridge.approvalRequested, req_id, reason)
+        self._emit(self._bridge.approvalRequested, req_id, tool, reason)
 
     def _resolve_approval(self, req_id: str, ok: bool):
         respond = self._pending_approvals.pop(req_id, None)

@@ -194,7 +194,27 @@ class MainWindow(FramelessWindow):
         self._pending_tool_blocks: dict = {}  # 工具名 -> 未回结果的工具块队列
 
     def closeEvent(self, event):
-        """关闭窗口前保存当前 AI 会话并收尾 Web 侧栏"""
+        """关闭窗口：先确定性排空后台工作，再保存 AI 会话并收尾 Web 侧栏。
+
+        顺序很关键 —— 排空必须最前。本项目原先的关闭链路只保存 AI 会话
+        （而 `sidebar.shutdown()` 的实现体是 `pass`、`agent_dialog` 根本没有
+        `shutdown`），全仓没有 `aboutToQuit`、没有任何线程排空，于是所有后台
+        QThread/QThreadPool 只能靠 C++ 析构期的隐式等待（无超时，且发生在解释器
+        收尾阶段）—— 这正是 `logs/crash_log_*.txt` 里退出期
+        `QThread: Destroyed while thread '' is still running`（56/68 份）的成因。
+        """
+        try:
+            from core.lifecycle import ShutdownCoordinator
+            coordinator = ShutdownCoordinator.instance()
+            results = coordinator.shutdown(5000)
+            print(f"[MainWindow] 关闭排空: {coordinator.summary()}")
+            pending = [name for name, ok, _ms in results if not ok]
+            if pending:
+                print(f"[MainWindow] 以下后台工作未能在预算内排空: {pending}")
+        except Exception as e:
+            # 排空失败不能阻止关闭，但必须留下痕迹
+            print(f"[MainWindow] 关闭排空失败（继续关闭）: {e}")
+
         if hasattr(self, '_ai_agent') and self._ai_agent.is_ready():
             self._ai_agent.save_session()
         sidebar = getattr(self, "_ai_sidebar", None)
@@ -293,6 +313,11 @@ class MainWindow(FramelessWindow):
         self._ai_agent.bash_approval_requested.connect(
             self._ai_sidebar.request_bash_approval
         )
+        # 高危工具解锁审批卡:edit_file/write_file/run_script 需用户批准
+        if hasattr(self._ai_sidebar, "request_tool_approval"):
+            self._ai_agent.tool_approval_requested.connect(
+                self._ai_sidebar.request_tool_approval
+            )
         # ask_user 提问卡:Web 侧栏渲染提问 UI;经典侧栏回退 Qt 对话框
         self._ai_agent.ask_user_requested.connect(self._on_ask_user_requested)
         # 上下文用量统计 → Web 侧栏悬浮卡

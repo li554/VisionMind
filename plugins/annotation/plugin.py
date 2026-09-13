@@ -35,6 +35,7 @@ class AnnotationPlugin(IPlugin):
             StateType.DATASETS_CHANGED:    self.interface.on_datasets_changed,
             StateType.HARD_SAMPLE_CHANGED: self.interface.on_hard_sample_changed,
             StateType.TASK_MODE_CHANGED:   self.interface.on_task_mode_changed,
+            StateType.BATCH_PROGRESS:      self.interface.on_batch_progress,
             StateType.PROJECTS_CHANGED:    self.interface.on_projects_changed,
             StateType.PROJECT_SELECTED:    self.on_project_changed,
         }

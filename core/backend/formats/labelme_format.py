@@ -2,6 +2,8 @@ import json
 import os
 from typing import List, Dict, Any, Optional
 from .base import AnnotationFormat, AnnotationData, SaveData, CategoryInfo
+from core.common.atomic_io import atomic_open
+from core.common.atomic_io import atomic_open
 
 
 class LabelMeFormat(AnnotationFormat):
@@ -237,7 +239,7 @@ class LabelMeFormat(AnnotationFormat):
         }
 
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        with open(output_path, 'w', encoding='utf-8') as f:
+        with atomic_open(output_path, 'w', encoding='utf-8') as f:
             json.dump(labelme_data, f, indent=2, ensure_ascii=False)
 
         if categories:
@@ -276,7 +278,7 @@ class LabelMeFormat(AnnotationFormat):
                             changed = True
 
                     if changed:
-                        with open(filepath, 'w', encoding='utf-8') as f:
+                        with atomic_open(filepath, 'w', encoding='utf-8') as f:
                             json.dump(data, f, ensure_ascii=False, indent=2)
                         total_processed += 1
                 except Exception as e:
@@ -316,7 +318,7 @@ class LabelMeFormat(AnnotationFormat):
                     new_count = len(data['shapes'])
 
                     if new_count < original_count:
-                        with open(filepath, 'w', encoding='utf-8') as f:
+                        with atomic_open(filepath, 'w', encoding='utf-8') as f:
                             json.dump(data, f, ensure_ascii=False, indent=2)
                         total_processed += 1
                 except Exception as e:

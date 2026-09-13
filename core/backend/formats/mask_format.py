@@ -3,6 +3,7 @@ import numpy as np
 from typing import List, Dict, Any, Optional
 from .base import AnnotationFormat, AnnotationData, SaveData, CategoryInfo
 from ..utils import imread_unicode, imwrite_unicode
+from core.common.atomic_io import atomic_open, atomic_writer_path
 
 
 class MaskFormat(AnnotationFormat):
@@ -174,7 +175,11 @@ class MaskFormat(AnnotationFormat):
                 x, y, w, h = [int(v) for v in inst['bbox']]
                 cv2.rectangle(colored_mask, (x, y), (x + w, y + h), color, -1)
 
-        imwrite_unicode(output_path, cv2.cvtColor(colored_mask, cv2.COLOR_RGB2BGR))
+        with atomic_writer_path(output_path) as _tmp:
+            if not imwrite_unicode(
+                    _tmp, cv2.cvtColor(colored_mask, cv2.COLOR_RGB2BGR),
+                    ext=os.path.splitext(output_path)[1]):
+                raise IOError(f"写入掩码失败: {output_path}")
 
         if categories:
             dir_path = os.path.dirname(output_path)
@@ -220,13 +225,17 @@ class MaskFormat(AnnotationFormat):
                         mask[mask == old_class_id] = new_class_id
                         mask[mask > old_class_id] -= 1
                         
-                        cv2.imwrite(filepath, mask)
+                        with atomic_writer_path(filepath) as _tmp:
+                            if not imwrite_unicode(
+                                    _tmp, mask,
+                                    ext=os.path.splitext(filepath)[1]):
+                                raise IOError(f"写入掩码失败: {filepath}")
                     except Exception as e:
                         print(f"[MaskFormat] Failed to update {filepath}: {e}")
             else:
                 class_names[old_class_id] = new_label
 
-            with open(classes_path, 'w', encoding='utf-8') as f:
+            with atomic_open(classes_path, 'w', encoding='utf-8') as f:
                 for name in class_names:
                     f.write(f"{name}\n")
 
@@ -280,13 +289,17 @@ class MaskFormat(AnnotationFormat):
                         mask[mask == target_class_id] = 0
                         for old_id in range(target_class_id + 1, len(class_names)):
                             mask[mask == old_id] = old_id - 1
-                        imwrite_unicode(filepath, mask)
+                        with atomic_writer_path(filepath) as _tmp:
+                            if not imwrite_unicode(
+                                    _tmp, mask,
+                                    ext=os.path.splitext(filepath)[1]):
+                                raise IOError(f"写入掩码失败: {filepath}")
                         total_processed += 1
                 except Exception as e:
                     print(f"[MaskFormat] Error processing {filepath}: {e}")
 
             class_names.remove(category_name)
-            with open(classes_path, 'w', encoding='utf-8') as f:
+            with atomic_open(classes_path, 'w', encoding='utf-8') as f:
                 for name in class_names:
                     f.write(f"{name}\n")
 

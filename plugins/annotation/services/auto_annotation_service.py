@@ -25,7 +25,7 @@ from core.backend.utils import process_mask_results, convert_bbox_to_polygon, ca
 from core.common.action_registry import action
 from core.common.image_utils import imread_unicode, imwrite_unicode
 from core.common.settings import settings
-from core.common.project_settings import project_settings
+from core.common.project_settings import project_settings, RULES_SCHEMA_VERSION
 from core.service.common_service import ExampleSelectionManager, PromptManager
 from core.service.project_service import ProjectService
 from . import _convert_numpy_types
@@ -61,7 +61,7 @@ class AutoAnnotationService:
         self.support_sets_dir = None
         self.plain_model_type = ""
         self.example_selector = ExampleSelectionManager()
-        self.model_manager = ModelManager()  # 保留 QThread 信号（model_load_*）；服务非 QObject，不传 parent
+        self.model_manager = ModelManager()  # 后台线程池加载模型（不再持有 QThread 引用）
 
     # ====== 区域: 推理核心 ======
     # 原 inference_service: predict_by_text/model/example_current，已合并为单个 predict_current
@@ -420,8 +420,13 @@ class AutoAnnotationService:
             # 关键: save_current 只写盘不同步内存。画布刷新事件
             # (annotations_changed) 的签名去重基于内存 current_annotations,
             # 不同步会签名不变 → 事件处理器跳过刷新 → 检测到目标但画布不渲染
+            #
+            # 但**必须带 for_path 校验**（审计 D2）：批量路径下 image_path 常常不是屏幕
+            # 上那张图，无条件写回会把"最后一张批量图"的标注塞进"当前图"的状态里，
+            # 随后任何一次保存都会把它写进当前图的标注文件 —— 静默数据损坏。
+            # 这里改用只读真值的受控入口：路径不匹配时直接拒绝写回（画布保持不动）。
             if self.manual is not None:
-                self.manual.current_annotations = list(merged)
+                self.manual.set_current_annotations(list(merged), for_path=image_path)
 
         result = {
             "status": "success",
@@ -1000,7 +1005,7 @@ class AutoAnnotationService:
 
     VALID_RULE_KEYS = {"text", "max_instances", "conf_threshold", "area_range",
                        "width_range", "height_range", "aspect_ratio_range",
-                       "center_range", "gray_range", "mode"}
+                       "gray_range", "mode"}
 
     def get_rules_text(self, rules):
         if not rules:
@@ -1091,83 +1096,123 @@ class AutoAnnotationService:
     # ====== 区域: 批量 AI 转换 ======
     # 原 annotation_io: batch_ai_convert
 
+    # `find_and_load_annotations` / `save_image_annotations` 只存在于
+    # ManualAnnotationService 上（本类没有这两个方法）。原先以 `self.` 调用 ->
+    # 第一次迭代必 AttributeError，"AI 全量转换"100% 不可用（审计 D9）。
+    # 这里显式委托给 manual 服务，并在缺失时给出可诊断的失败而不是崩栈。
+    def _load_annotations_for_convert(self, img_path, mode, fmt, output_dir):
+        manual = getattr(self, "manual", None)
+        if manual is None or not hasattr(manual, "find_and_load_annotations"):
+            return {"status": "error", "annotations": [],
+                    "message": "manual 服务不可用，无法读取待转换标注"}
+        return manual.find_and_load_annotations(
+            img_path, mode, fmt, output_dir=output_dir, is_non_project_mode=True)
+
+    def _save_converted_annotations(self, img_path, annotations, target_dir, fmt, categories):
+        manual = getattr(self, "manual", None)
+        if manual is None or not hasattr(manual, "save_image_annotations"):
+            return {"status": "error",
+                    "message": "manual 服务不可用，无法写入转换后的标注"}
+        return manual.save_image_annotations(
+            img_path, annotations, output_dir=target_dir, fmt=fmt,
+            categories=categories, project_mode=False)
+
     def batch_ai_convert(self, image_paths, source_mode='det', target_mode='seg',
-                          output_dir=None, categories=None, progress_callback=None):
+                          output_dir=None, categories=None, progress_callback=None,
+                          cancel_event=None):
         result = {"converted_count": 0, "empty_results_count": 0,
-                  "images_with_empty_results": 0, "total": len(image_paths), "errors": []}
-        for i, img_path in enumerate(image_paths):
-            if progress_callback:
-                progress_callback(i, len(image_paths))
-            mode = source_mode
-            fmt = 'yolo' if mode == 'det' else ('yoloobb' if mode == 'obb' else 'yoloseg')
-            ann_dir = output_dir or settings.get("output_dir", "")
-            res = self.find_and_load_annotations(img_path, mode, fmt, output_dir=ann_dir, is_non_project_mode=True)
-            if res['status'] != 'success' or not res['annotations']:
-                continue
-            anns = res['annotations']
-            to_convert_bboxes = []
-            for ann in anns:
-                if ann.get('bbox'):
-                    to_convert_bboxes.append(ann['bbox'])
-            if not to_convert_bboxes:
-                continue
-            image = imread_unicode(img_path)
-            if image is None:
-                continue
-            image_had_empty = False
-            final_annotations = []
-            for ann in anns:
-                bbox = ann.get('bbox')
-                if not bbox:
+                  "images_with_empty_results": 0, "total": len(image_paths),
+                  "processed_count": 0, "cancelled": False, "errors": []}
+        # 取消标记挂到 service 上，界面的"取消"按钮经 `cancel_batch_convert()` 置位
+        # （审计 D9 余项：原先取消按钮从未接线，按下去毫无作用）。
+        self._batch_cancel_event = cancel_event
+        try:
+            for i, img_path in enumerate(image_paths):
+                # 协作式取消：在**图片边界**检查，绝不打断正在写的那张图，
+                # 保证已落盘的数据始终是完整的（不会留半张图的标注）
+                if cancel_event is not None and cancel_event.is_set():
+                    result["cancelled"] = True
+                    print("[batch_ai_convert] 已按用户请求取消，处理到第 %d/%d 张"
+                          % (i, len(image_paths)))
+                    break
+                result["processed_count"] = i
+                if progress_callback:
+                    progress_callback(i, len(image_paths))
+                mode = source_mode
+                fmt = 'yolo' if mode == 'det' else ('yoloobb' if mode == 'obb' else 'yoloseg')
+                ann_dir = output_dir or settings.get("output_dir", "")
+                res = self._load_annotations_for_convert(img_path, mode, fmt, output_dir=ann_dir)
+                if res['status'] != 'success' or not res['annotations']:
                     continue
-                refine = settings.get("high_precision", True)
-                conv = convert_bbox_to_polygon(image=image, bbox=bbox, model_type=None, refine=refine)
-                if conv.get('status') == 'success' and conv.get('polygons'):
-                    polygons = conv['polygons']
-                    if target_mode == 'det':
-                        all_pts = []
-                        for p in polygons:
-                            all_pts.extend(p)
-                        if all_pts:
-                            xs = [p[0] for p in all_pts]
-                            ys = [p[1] for p in all_pts]
-                            bbox = [float(min(xs)), float(min(ys)), float(max(xs) - min(xs)), float(max(ys) - min(ys))]
-                        else:
-                            bbox = [0, 0, 0, 0]
-                    else:
-                        if target_mode == 'obb':
+                anns = res['annotations']
+                to_convert_bboxes = []
+                for ann in anns:
+                    if ann.get('bbox'):
+                        to_convert_bboxes.append(ann['bbox'])
+                if not to_convert_bboxes:
+                    continue
+                image = imread_unicode(img_path)
+                if image is None:
+                    continue
+                image_had_empty = False
+                final_annotations = []
+                for ann in anns:
+                    bbox = ann.get('bbox')
+                    if not bbox:
+                        continue
+                    refine = settings.get("high_precision", True)
+                    conv = convert_bbox_to_polygon(image=image, bbox=bbox, model_type=None, refine=refine)
+                    if conv.get('status') == 'success' and conv.get('polygons'):
+                        polygons = conv['polygons']
+                        if target_mode == 'det':
                             all_pts = []
                             for p in polygons:
                                 all_pts.extend(p)
                             if all_pts:
-                                pts = np.array(all_pts, dtype=np.float32)
-                                if len(pts) > 4:
-                                    rect = cv2.minAreaRect(pts)
-                                    polygons = [cv2.boxPoints(rect).tolist()]
-                    final_ann = {'bbox': bbox, 'label': ann.get('label', 'unknown'),
-                                 'polygons': polygons,
-                                 'shape_type': 'rectangle' if target_mode == 'det' else 'polygon'}
-                    final_annotations.append(final_ann)
-                    result["converted_count"] += 1
-                else:
-                    image_had_empty = True
-                    result["empty_results_count"] += 1
-                    bx, by, bw, bh = bbox
-                    poly = [[bx, by], [bx + bw, by], [bx + bw, by + bh], [bx, by + bh]]
-                    final_annotations.append({'bbox': bbox, 'label': ann.get('label', 'unknown'),
-                                             'polygons': [poly],
-                                             'shape_type': 'rectangle' if target_mode == 'det' else 'polygon'})
-            if image_had_empty:
-                result["images_with_empty_results"] += 1
-            if target_mode == 'obb':
-                for ann in final_annotations:
-                    ann = self._convert_annotation_mode(ann, 'obb')
-            target_fmt = {'seg': 'yoloseg', 'obb': 'yoloobb', 'det': 'yolo'}.get(target_mode, 'yolo')
-            target_dir = os.path.join(ann_dir, target_mode)
-            os.makedirs(target_dir, exist_ok=True)
-            self.save_image_annotations(img_path, final_annotations, output_dir=target_dir,
-                                       fmt=target_fmt, categories=categories)
-        if progress_callback:
+                                xs = [p[0] for p in all_pts]
+                                ys = [p[1] for p in all_pts]
+                                bbox = [float(min(xs)), float(min(ys)), float(max(xs) - min(xs)), float(max(ys) - min(ys))]
+                            else:
+                                bbox = [0, 0, 0, 0]
+                        else:
+                            if target_mode == 'obb':
+                                all_pts = []
+                                for p in polygons:
+                                    all_pts.extend(p)
+                                if all_pts:
+                                    pts = np.array(all_pts, dtype=np.float32)
+                                    if len(pts) > 4:
+                                        rect = cv2.minAreaRect(pts)
+                                        polygons = [cv2.boxPoints(rect).tolist()]
+                        final_ann = {'bbox': bbox, 'label': ann.get('label', 'unknown'),
+                                     'polygons': polygons,
+                                     'shape_type': 'rectangle' if target_mode == 'det' else 'polygon'}
+                        final_annotations.append(final_ann)
+                        result["converted_count"] += 1
+                    else:
+                        image_had_empty = True
+                        result["empty_results_count"] += 1
+                        bx, by, bw, bh = bbox
+                        poly = [[bx, by], [bx + bw, by], [bx + bw, by + bh], [bx, by + bh]]
+                        final_annotations.append({'bbox': bbox, 'label': ann.get('label', 'unknown'),
+                                                 'polygons': [poly],
+                                                 'shape_type': 'rectangle' if target_mode == 'det' else 'polygon'})
+                if image_had_empty:
+                    result["images_with_empty_results"] += 1
+                if target_mode == 'obb':
+                    for ann in final_annotations:
+                        ann = self._convert_annotation_mode(ann, 'obb')
+                target_fmt = {'seg': 'yoloseg', 'obb': 'yoloobb', 'det': 'yolo'}.get(target_mode, 'yolo')
+                target_dir = os.path.join(ann_dir, target_mode)
+                os.makedirs(target_dir, exist_ok=True)
+                self._save_converted_annotations(img_path, final_annotations,
+                                                target_dir, target_fmt, categories)
+            result["processed_count"] = i + 1
+            if progress_callback:
+                progress_callback(i + 1, len(image_paths))
+        finally:
+            self._batch_cancel_event = None
+        if not result["cancelled"] and progress_callback:
             progress_callback(len(image_paths), len(image_paths))
         return result
 
@@ -1437,14 +1482,29 @@ class AutoAnnotationService:
     def list_builtin_models(self, role=""):
         return self.list_builtin_models_text(role)
 
-    def convert_all_with_ai(self, image_paths, source_mode='det', target_mode='seg', progress_callback=None):
-        """AI 全量转换标注。返回 service 结果 dict。"""
+    def convert_all_with_ai(self, image_paths, source_mode='det', target_mode='seg',
+                            progress_callback=None, cancel_event=None):
+        """AI 全量转换标注。返回 service 结果 dict。
+
+        `cancel_event`：可选的 threading.Event，由界面上的"取消"按钮置位（审计 D9 余项）。
+        原先这个对话框的取消按钮**没有接到任何逻辑**，按下去毫无作用；现在把
+        event 一路传到逐图循环，在每个图片边界检查并提前收尾。
+        """
         return self.batch_ai_convert(
             image_paths, source_mode, target_mode,
             output_dir=self.context.output_dir,
             categories=self.context.categories,
-            progress_callback=progress_callback
+            progress_callback=progress_callback,
+            cancel_event=cancel_event
         )
+
+    def cancel_batch_convert(self):
+        """请求取消正在进行的 AI 全量转换（下一个图片边界生效）。"""
+        ev = getattr(self, "_batch_cancel_event", None)
+        if ev is not None:
+            ev.set()
+            return True
+        return False
 
     @action("batch.one_click_by_current", background=True, description="按模式对当前图片进行自动标注并写入数据。\n- mode: 标注模式（必填），text=基于文本 / example=基于示例 / model=基于普通模型\n- text: mode=text 时的描述文本，留空则使用提示词库中选中的提示词\n- mode=model 时需先通过 resource.set_model(role='plain', ...) 选择普通模型（详见 set_model 的 role 说明）\n- 标注结果自动保存到磁盘，标注结果已通过 annotation:annotations_changed 事件自动刷新界面\n- 用户仅说自动标注时：优先基于文本，提示词库无选中提示词则基于示例；示例库也为空且无普通模型（role='plain'）时，**停止并询问用户**标注方式，不得自行扫描磁盘注册模型\n- 返回「模型正在后台加载，请稍候...」时最多重试 1 次，仍加载中则告知用户稍后重试，不得连续重试", category="自动标注", params={"mode": {"type": "str", "required": True}, "text": "str"}, scope="agent")
     def one_click_by_current(self, mode="", text="", reference_annotation=None, task_mode=None):
@@ -1557,6 +1617,9 @@ class AutoAnnotationService:
         total = len(image_files)
         processed = 0
         errors = []
+        # 通知界面弹出进度对话框：主线程发起（菜单）时事件同步分发，
+        # agent 后台线程发起时 EventBus 会把事件 marshal 回主线程，两条路径都能显示
+        self._publish_batch_progress({"phase": "start", "mode": mode, "total": total})
         try:
             for img_path in image_files:
                 if self.batch_cancel_requested:
@@ -1582,13 +1645,35 @@ class AutoAnnotationService:
                 else:
                     errors.append(f"{os.path.basename(img_path)}: {res.get('message', '未知错误')}")
                 processed += 1
+                self._publish_batch_progress({
+                    "phase": "progress", "mode": mode,
+                    "processed": processed, "total": total, "image": img_path,
+                })
                 if progress_callback is not None:
                     progress_callback(processed, total, img_path, res)
         finally:
+            canceled = self.batch_cancel_requested
             self.one_click_running = False
             self.one_click_paused = False
             self.batch_cancel_requested = False
-        return {"status": "success", "total": total, "processed": processed, "errors": errors}
+            self._publish_batch_progress({
+                "phase": "finished", "mode": mode, "canceled": canceled,
+                "processed": processed, "total": total, "errors": len(errors),
+            })
+        return {"status": "success", "total": total, "processed": processed,
+                "canceled": canceled, "errors": errors}
+
+    def _publish_batch_progress(self, payload):
+        """发布批量自动标注进度事件（界面订阅后显示/更新进度对话框）。
+
+        进度事件是纯 UI 反馈，发布失败（未注册事件总线等）不应影响标注本身。
+        """
+        if self.manual is None:
+            return
+        try:
+            self.manual._emit(StateType.BATCH_PROGRESS, payload)
+        except Exception as e:
+            print(f"[AutoAnnotationService] 发布批量标注进度失败: {e}")
 
     def cancel_batch(self):
         self.batch_cancel_requested = True
@@ -1783,16 +1868,16 @@ class AutoAnnotationService:
                 "- enabled=true 表示该规则已启用并会在自动标注时应用过滤；enabled=false 表示未启用（不参与过滤）\n"
                 "- 规则启用状态与界面复选框一致：置信度默认启用，其他规则默认关闭\n"
                 "- text（文本描述）、mode（模式）不算过滤规则，始终存在\n"
-                "- 注意：area_range/width_range/height_range/aspect_ratio_range/center_range 是「相对参考示例的偏差范围」，仅在基于示例标注（mode=example）时生效\n"
-                "- conf_threshold 是置信度阈值（0~1），始终生效\n"
-                "- 禁用某规则：调用 set_rule(key=\"规则名\", value=\"disabled\")；启用：传入实际值如 set_rule(key=\"area_range\", value=\"[0.5, 1.5]\")",
+                "- 全部过滤规则均为绝对值规则，任何标注模式下都生效：\n"
+                "  max_instances=最大保留数量；area_range=[min,max] 面积范围（像素²）；width_range/height_range=[min,max] 宽/高范围（像素）；aspect_ratio_range=[min,max] 宽高比 W/H；gray_range=[min,max] 区域平均灰度(0~255)；conf_threshold=置信度下限(0~1)\n"
+                "- 禁用某规则：调用 set_rule(key=\"规则名\", value=\"disabled\")；启用：传入实际值如 set_rule(key=\"area_range\", value=\"[100, 50000]\")",
             category="自动标注", scope="agent")
     def get_rules(self):
         rules = self.context.current_project_rules or {}
         # 所有可能的规则字段（mode 不算过滤规则，text 始终存在）
         all_keys = ["text", "max_instances", "conf_threshold", "area_range",
                     "width_range", "height_range", "aspect_ratio_range",
-                    "center_range", "gray_range", "mode"]
+                    "gray_range", "mode"]
         result = {}
         for key in all_keys:
             if key in rules:
@@ -1802,11 +1887,11 @@ class AutoAnnotationService:
         return json.dumps(result, ensure_ascii=False, indent=2)
 
     @action("resource.set_rule", description="设置或禁用自动标注规则的某个字段。\n"
-                "- key：规则字段名，可选值：text（文本描述）、max_instances（最大检测数）、conf_threshold（置信度阈值 0-1）、area_range（面积范围 [min,max]）、width_range、height_range、aspect_ratio_range、center_range、gray_range\n"
+                "- key：规则字段名，可选值：text（文本描述）、max_instances（最大保留数量）、conf_threshold（置信度阈值 0-1）、area_range（面积范围 [min,max]，像素²）、width_range（宽度范围 [min,max]，像素）、height_range（高度范围 [min,max]，像素）、aspect_ratio_range（宽高比 W/H 范围 [min,max]）、gray_range（灰度范围 [min,max]，0~255）\n"
                 "- value：字段值，数字范围类用 JSON 数组如 [0, 10000]；传入 \"disabled\" 表示禁用该规则（从规则中移除，不再参与过滤）\n"
-                "- 启用某规则：传入实际值，如 set_rule(key=\"area_range\", value=\"[0.5, 1.5]\")\n"
+                "- 启用某规则：传入实际值，如 set_rule(key=\"area_range\", value=\"[100, 50000]\")\n"
                 "- 禁用某规则：set_rule(key=\"area_range\", value=\"disabled\")\n"
-                "- 注意：area_range/width_range/height_range/aspect_ratio_range/center_range 是「相对参考示例的偏差范围」，仅基于示例标注（mode=example）时生效\n"
+                "- 所有过滤规则都是绝对值规则，任何标注模式下都生效\n"
                 "- 设置后立即持久化，后续 one_click_by_text 等标注操作会使用新规则",
             category="自动标注", params={"key": "str", "value": "str"}, scope="agent")
     def set_rule(self, key, value):
@@ -1852,6 +1937,7 @@ class AutoAnnotationService:
             "current_category": self.context.current_category or "",
             "export_format": self.context._non_project_format or "labelme",
             "rules": self.context.current_project_rules,
+            "rules_schema": RULES_SCHEMA_VERSION,
             "hard_samples": [{"path": p, "description": d} for p, d in self.context.hard_samples.items()],
         }
         if self.manual is not None:

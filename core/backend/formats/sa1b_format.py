@@ -4,6 +4,8 @@ import cv2
 import numpy as np
 from typing import List, Dict, Any, Optional
 from .base import AnnotationFormat, AnnotationData, SaveData, CategoryInfo
+from core.common.atomic_io import atomic_open
+from core.common.atomic_io import atomic_open
 
 
 class SA1BFormat(AnnotationFormat):
@@ -134,7 +136,7 @@ class SA1BFormat(AnnotationFormat):
         }
         
         os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else '.', exist_ok=True)
-        with open(output_path, 'w', encoding='utf-8') as f:
+        with atomic_open(output_path, 'w', encoding='utf-8') as f:
             json.dump(sa1b_data, f, indent=2, ensure_ascii=False)
         
         if categories:

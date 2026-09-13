@@ -30,6 +30,11 @@ class ActionTool(Tool):
         # 不经主线程调度器——否则推理期间整个界面冻结
         self.read_only = False
         self.background = False
+        # 当前正在执行的 LLMWorker 的停止事件（由 worker 在执行工具前设置）。
+        # 非 background 的 action 要 marshal 到主线程执行，而主线程可能正阻塞在
+        # `QThread.wait()` 上（stop_and_wait），不跑事件循环 -> 投递的任务永远不执行。
+        # 把这个事件传给 dispatcher，停止请求就能立刻打断互等（审计 D14）。
+        self.abort_event = None
         try:
             from core.common.action_registry import ActionRegistry
             meta = ActionRegistry.instance().get_meta(action_name)
@@ -58,7 +63,7 @@ class ActionTool(Tool):
                 result = _do_call()
             else:
                 from core.common.main_thread_dispatcher import run_on_main
-                result = run_on_main(_do_call)
+                result = run_on_main(_do_call, abort_event=self.abort_event)
 
             # 元组返回约定：(data..., error)，末位为错误字符串或含 error 键的 dict 时视为失败
             tuple_error = self._extract_tuple_error(result)

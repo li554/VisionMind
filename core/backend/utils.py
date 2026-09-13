@@ -20,10 +20,16 @@ def imread_unicode(path: str, flags: int = cv2.IMREAD_COLOR) -> Optional[np.ndar
         print(f"[imread_unicode] Failed to read image {path}: {e}")
         return None
 
-def imwrite_unicode(path: str, image: np.ndarray, params: list = None) -> bool:
-    """保存图像，支持中文路径"""
+def imwrite_unicode(path: str, image: np.ndarray, params: list = None,
+                    ext: str = None) -> bool:
+    """保存图像，支持中文路径。
+
+    `ext` 用于显式指定编码格式（如 '.png'）。原子写入时临时文件的扩展名结尾与
+    目标不同（见 core/common/atomic_io.py），此时必须显式传入 ext，因为本函数
+    默认用路径扩展名推断格式。
+    """
     try:
-        ext = os.path.splitext(path)[1].lower()
+        ext = (ext or os.path.splitext(path)[1]).lower()
         if ext in ['.jpg', '.jpeg']:
             encode_param = cv2.IMWRITE_JPEG_QUALITY
             quality = 95
@@ -232,12 +238,22 @@ def create_colored_combined_mask(masks: List[np.ndarray], image_shape: Tuple) ->
 def apply_rules(instances: List[Dict[str, Any]], rules: Optional[Dict[str, Any]] = None,
                 support_info: Optional[Dict[str, Any]] = None,
                 image: Optional[np.ndarray] = None) -> List[Dict[str, Any]]:
-    """根据规则过滤实例
+    """根据规则过滤实例（全部为绝对值规则）
+
+    规则「启用」由字段是否存在决定，字段值一律为绝对范围：
+        - conf_threshold:    置信度下限 (0~1)
+        - max_instances:     最大保留数量（按 conf 降序截断）
+        - area_range:        面积范围 [min, max]，单位：像素²
+        - width_range:       宽度范围 [min, max]，单位：像素
+        - height_range:      高度范围 [min, max]，单位：像素
+        - aspect_ratio_range: 宽高比 W/H 范围 [min, max]，绝对比值
+        - gray_range:        区域平均灰度范围 [min, max] (0~255)
 
     Args:
         instances: 实例列表
         rules: 过滤规则字典
-        support_info: 参考信息（有示例时使用相对模式）
+        support_info: 旧版「相对参考示例」过滤用的参考信息；绝对规则不再使用，
+            保留参数仅为兼容既有调用方
         image: 原始图像（灰度过滤需要）
     """
     if rules is None:
@@ -267,30 +283,22 @@ def apply_rules(instances: List[Dict[str, Any]], rules: Optional[Dict[str, Any]]
     if conf_thres is not None:
         filtered = [i for i in filtered if i.get('conf', 1.0) >= conf_thres]
 
-    if 'area_range' in rules and support_info and 'avg_area' in support_info:
+    if 'area_range' in rules:
         l, h = rules['area_range']
-        target = support_info['avg_area']
-        filtered = [i for i in filtered if target*(1-l) <= i['_calc_area'] <= target*(1+h)]
+        filtered = [i for i in filtered if l <= i['_calc_area'] <= h]
 
-    if 'width_range' in rules and support_info and 'avg_width' in support_info:
+    if 'width_range' in rules:
         l, h = rules['width_range']
-        target = support_info['avg_width']
-        filtered = [i for i in filtered if target*(1-l) <= i['bbox'][2] <= target*(1+h)]
+        filtered = [i for i in filtered if l <= i['bbox'][2] <= h]
 
-    if 'height_range' in rules and support_info and 'avg_height' in support_info:
+    if 'height_range' in rules:
         l, h = rules['height_range']
-        target = support_info['avg_height']
-        filtered = [i for i in filtered if target*(1-l) <= i['bbox'][3] <= target*(1+h)]
+        filtered = [i for i in filtered if l <= i['bbox'][3] <= h]
 
-    if 'aspect_ratio_range' in rules and support_info and 'avg_aspect_ratio' in support_info:
+    if 'aspect_ratio_range' in rules:
         l, h = rules['aspect_ratio_range']
-        target = support_info['avg_aspect_ratio']
-        filtered = [i for i in filtered if target*(1-l) <= (i['bbox'][2]/i['bbox'][3] if i['bbox'][3]!=0 else 0) <= target*(1+h)]
-
-    if 'center_range' in rules and support_info and 'avg_center_x' in support_info:
-        mx, my = rules['center_range']
-        tx, ty = support_info['avg_center_x'], support_info['avg_center_y']
-        filtered = [i for i in filtered if abs((i['bbox'][0]+i['bbox'][2]/2)-tx) <= mx and abs((i['bbox'][1]+i['bbox'][3]/2)-ty) <= my]
+        filtered = [i for i in filtered
+                    if l <= (i['bbox'][2] / i['bbox'][3] if i['bbox'][3] else 0) <= h]
 
     if 'gray_range' in rules:
         l, h = rules['gray_range']
@@ -765,7 +773,7 @@ def process_mask_results(results, label: Optional[str] = None, bbox: Optional[Li
         bbox: 指定的边界框
         rules: 过滤规则
         single_result: 是否只返回单个结果
-        support_info: 参考信息（有示例时使用相对模式）
+        support_info: 旧版相对规则的参考信息；绝对规则不再使用，保留仅为兼容
         image: 原始图像（灰度过滤需要）
         texts: 文本提示词列表。当传入时，每个实例按其命中的提示词索引(cls)映射到对应类别，
             实现多提示词时"哪个提示词命中的结果就归哪个类别"。

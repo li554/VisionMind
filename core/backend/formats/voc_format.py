@@ -2,6 +2,7 @@ import os
 import xml.etree.ElementTree as ET
 from typing import List, Dict, Any, Optional
 from .base import AnnotationFormat, AnnotationData, SaveData, CategoryInfo
+from core.common.atomic_io import atomic_writer_path
 
 
 class VOCFormat(AnnotationFormat):
@@ -199,7 +200,8 @@ class VOCFormat(AnnotationFormat):
         
         tree = ET.ElementTree(annotation)
         os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else '.', exist_ok=True)
-        tree.write(output_path, encoding='utf-8', xml_declaration=True)
+        with atomic_writer_path(output_path) as _tmp:
+            tree.write(_tmp, encoding='utf-8', xml_declaration=True)
 
         if categories:
             dir_path = os.path.dirname(output_path)
@@ -234,7 +236,8 @@ class VOCFormat(AnnotationFormat):
                         changed = True
 
                 if changed:
-                    tree.write(filepath, encoding='utf-8', xml_declaration=True)
+                    with atomic_writer_path(filepath) as _tmp:
+                        tree.write(_tmp, encoding='utf-8', xml_declaration=True)
                     total_processed += 1
 
             return total_processed
@@ -273,7 +276,8 @@ class VOCFormat(AnnotationFormat):
                     root.remove(obj)
 
                 if removed_count > 0:
-                    tree.write(filepath, encoding='utf-8', xml_declaration=True)
+                    with atomic_writer_path(filepath) as _tmp:
+                        tree.write(_tmp, encoding='utf-8', xml_declaration=True)
                     total_processed += 1
 
             return total_processed

@@ -147,6 +147,13 @@ def main():
                 print(f"[TestRunner] 共 {len(engine.scenarios)} 个场景，2 秒后开始执行...")
 
     # 8. 运行应用
+    # 关闭兜底：正常路径是 MainWindow.closeEvent 排空后台工作；但若窗口不是通过
+    # 标题栏关闭（或 Qt 自行退出），closeEvent 可能不触发。ShutdownCoordinator
+    # 的 shutdown() 是幂等的，因此这里再挂一次作为最后一道防线，确保退出期不会
+    # 出现 "QThread: Destroyed while thread '' is still running"。
+    from core.lifecycle import ShutdownCoordinator
+    app.aboutToQuit.connect(lambda: ShutdownCoordinator.instance().shutdown(5000))
+
     sys.exit(app.exec())
 
 

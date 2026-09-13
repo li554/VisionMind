@@ -2,6 +2,8 @@ import json
 import os
 from typing import List, Dict, Any, Optional
 from .base import AnnotationFormat, AnnotationData, SaveData, CategoryInfo
+from core.common.atomic_io import atomic_open
+from core.common.atomic_io import atomic_open
 
 
 class COCOFormat(AnnotationFormat):
@@ -374,7 +376,7 @@ class COCOFormat(AnnotationFormat):
             coco_data['annotations'].append(ann)
 
         os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else '.', exist_ok=True)
-        with open(output_path, 'w', encoding='utf-8') as f:
+        with atomic_open(output_path, 'w', encoding='utf-8') as f:
             json.dump(coco_data, f, indent=2, ensure_ascii=False)
         
         if coco_cache is not None:
@@ -465,7 +467,7 @@ class COCOFormat(AnnotationFormat):
                 ann_id += 1
 
         os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else '.', exist_ok=True)
-        with open(output_path, 'w', encoding='utf-8') as f:
+        with atomic_open(output_path, 'w', encoding='utf-8') as f:
             json.dump(coco_data, f, indent=2, ensure_ascii=False)
 
     @classmethod
@@ -514,7 +516,7 @@ class COCOFormat(AnnotationFormat):
                         changed = True
 
             if changed:
-                with open(coco_path, 'w', encoding='utf-8') as f:
+                with atomic_open(coco_path, 'w', encoding='utf-8') as f:
                     json.dump(data, f, ensure_ascii=False, indent=2)
                 return 1
 
@@ -562,7 +564,7 @@ class COCOFormat(AnnotationFormat):
             new_count = len(data['annotations'])
 
             if new_count < original_count:
-                with open(coco_path, 'w', encoding='utf-8') as f:
+                with atomic_open(coco_path, 'w', encoding='utf-8') as f:
                     json.dump(data, f, ensure_ascii=False, indent=2)
                 return 1
 

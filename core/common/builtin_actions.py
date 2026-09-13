@@ -357,10 +357,10 @@ class BuiltinActions:
 
     # ==================== AI Agent 测试 ====================
 
-    @action("agent.initialize", description="初始化 AI Agent（供自动化测试调用）。\n- 从系统配置读取 API Key 初始化内嵌 Agent\n- 已初始化时幂等跳过\n- 未配置 API Key 时返回 False", category="基础控制",
-            params={"api_key": "str", "base_url": "str", "model": "str"})
-    def agent_initialize(self, api_key: str = "", base_url: str = "", model: str = ""):
-        """初始化 AI Agent，参数缺省时从系统配置读取"""
+    @action("agent.initialize", description="初始化 AI Agent（供自动化测试调用）。\n- 从当前激活的 AI 提供商配置读取 API Key 初始化内嵌 Agent\n- 已初始化时幂等跳过\n- 未配置 API Key 时返回 False", category="基础控制",
+            params={"api_key": "str", "base_url": "str", "model": "str", "exclude_core_tools": "list"})
+    def agent_initialize(self, api_key: str = "", base_url: str = "", model: str = "", exclude_core_tools: list = None):
+        """初始化 AI Agent，参数缺省时从当前激活提供商读取"""
         if not self._engine or not getattr(self._engine, 'main_window', None):
             return False
         mw = self._engine.main_window
@@ -371,14 +371,13 @@ class BuiltinActions:
         if agent.is_ready():
             print("    [Agent] Agent 已初始化，跳过")
             return True
-        from core.common.settings import settings
-        api_key = api_key or settings.get("ai_api_key", "")
-        base_url = base_url or settings.get("ai_base_url", "https://api.deepseek.com")
-        model = model or settings.get("ai_model", "deepseek-chat")
+        if not api_key:
+            from core.common.ai_providers import get_active_credentials
+            api_key, base_url, model = get_active_credentials()
         if not api_key:
             print("    [Agent] 未配置 API Key，请先在系统配置中设置")
             return False
-        agent.initialize(api_key, base_url, model, main_window=mw)
+        agent.initialize(api_key, base_url, model, main_window=mw, exclude_core_tools=exclude_core_tools)
         ok = agent.is_ready()
         print(f"    [Agent] 初始化完成: {model} → {ok}")
         return ok
@@ -554,10 +553,13 @@ class BuiltinActions:
             "- name: 目标 action 完整注册名（如 annotation.manual.get_state）；expect_tool 不填时取该 action 的显示名\n"
             "- hint: true 时指令中点名工具名（只测调用链路）；false（默认）纯描述测「能否被找到」\n"
             "- require_plan: 是否强制「按计划执行」检查，默认 False（单步/查询类工具常直接调用，不做流程编排审查，报告仍如实显示该状态）\n"
+            "- self_stop: true 时按「agent 自主完整执行到自停」判定（不强制命中某个目标工具），适合多步真实对话指令；false（默认）仍强制期望工具命中（单步精确测试）\n"
             "- 返回 True=测试通过，False=存在失败项；报告打印到控制台并落盘", category="基础控制",
-            params={"name": "str", "instruction": "str", "hint": "bool", "expect_tool": "str", "require_plan": "bool", "save_report": "str", "max_wait": "int"})
+            params={"name": "str", "instruction": "str", "hint": "bool", "expect_tool": "str", "require_plan": "bool", "self_stop": "bool", "save_report": "str", "max_wait": "int", "strategy": "str"})
     def agent_test_action(self, name: str = "", instruction: str = "", hint: bool = False,
-                          expect_tool: str = "", require_plan: bool = False, save_report: str = "", max_wait: int = 600000):
+                          expect_tool: str = "", require_plan: bool = False, self_stop: bool = False,
+                          save_report: str = "", max_wait: int = 600000,
+                          strategy: str = ""):
         """通用工具调用自测：让 LLM 找并调用一个指定 action，审查会话验证调用正确性。"""
         if not self._engine or not getattr(self._engine, 'main_window', None):
             print("    [Agent] 无主窗口，无法测试")
@@ -605,35 +607,104 @@ class BuiltinActions:
             if not agent.stop_and_wait(max_wait):
                 print(f"    [Agent] 等待 Agent 空闲超时（>{max_wait}ms）")
                 return False
-        agent.reset()
-        agent._last_response = ""
-        print(f"    [Agent] 目标工具: {expected}  →  指令: {prompt}")
-        # 打开 AI 侧栏并走真实 UI 发送通道，渲染用户气泡 + 流式助手回复 + 工具调用块
-        try:
-            if hasattr(mw, "_ai_sidebar") and not mw._ai_sidebar.isVisible():
-                mw.toggle_ai_sidebar()
-                from PySide6.QtWidgets import QApplication
-                QApplication.processEvents()
-        except Exception:
-            pass
-        if hasattr(mw, "_ai_sidebar") and hasattr(mw._ai_sidebar, "_on_input_send"):
-            mw._ai_sidebar._on_input_send(prompt)
-        else:
-            agent.chat(prompt)
+        # ---- 基准测试：策略注入与指标采集 ----
+        # 工具调度策略（基准测试用）：不指定则维持当前策略不变
+        prev_strategy = agent.tool_strategy
+        if strategy:
+            print(f"    [Agent] 切换工具调度策略: {strategy}")
+            agent.set_tool_strategy(strategy)
+        from core.agent.token_budget import estimate_tokens, estimate_tools_tokens
+        _llm = getattr(agent, "_message_compressor_llm", None)
+        _tok_before_prompt = getattr(_llm, "total_prompt_tokens", 0) or 0
+        _tok_before_comp = getattr(_llm, "total_completion_tokens", 0) or 0
+        core_agent = getattr(agent, '_agent', None)
 
-        # ③ 泵事件等待 Agent 空闲（LLM 调用 + 工具执行期间主线程仍响应）
-        import time as _time
-        start = _time.time()
-        from PySide6.QtWidgets import QApplication
-        while agent.is_busy():
-            QApplication.processEvents()
-            if _time.time() - start > max_wait / 1000.0:
-                print(f"    [Agent] 等待测试完成超时（>{max_wait}ms）")
-                return False
-            _time.sleep(0.2)
+        metrics = {}
+        try:
+            agent.reset()
+            agent._last_response = ""
+            print(f"    [Agent] 目标工具: {expected}  →  指令: {prompt}")
+            # 打开 AI 侧栏并走真实 UI 发送通道，渲染用户气泡 + 流式助手回复 + 工具调用块
+            try:
+                if hasattr(mw, "_ai_sidebar") and not mw._ai_sidebar.isVisible():
+                    mw.toggle_ai_sidebar()
+                    from PySide6.QtWidgets import QApplication
+                    QApplication.processEvents()
+            except Exception:
+                pass
+            if hasattr(mw, "_ai_sidebar") and hasattr(mw._ai_sidebar, "_on_input_send"):
+                mw._ai_sidebar._on_input_send(prompt)
+            else:
+                agent.chat(prompt)
+
+            # chat() 内 _update_tools 已同步执行，此刻 agent.tools 即为暴露给 LLM 的工具集。
+            # 采集任务开始时的上下文大小（系统提示词 + 工具 schema token）与暴露工具名。
+            tool_list = list(core_agent.tools) if core_agent else []
+            exposed_names = sorted(t.name for t in tool_list)
+            metrics["strategy"] = strategy or prev_strategy
+            metrics["exposed_tool_count"] = len(exposed_names)
+            metrics["exposed_tools"] = exposed_names
+            try:
+                metrics["context_system_tokens"] = estimate_tokens(core_agent._system)
+            except Exception:
+                metrics["context_system_tokens"] = 0
+            try:
+                metrics["context_tools_tokens"] = estimate_tools_tokens(tool_list)
+            except Exception:
+                metrics["context_tools_tokens"] = 0
+            metrics["context_total_tokens"] = (
+                metrics.get("context_system_tokens", 0) + metrics.get("context_tools_tokens", 0)
+            )
+            # lru 窗口统计（窗口大小 / 实际窗口 / 保底数 / 裁剪数），便于对比窗口前后差异
+            try:
+                tm = getattr(agent, '_tool_manager', None)
+                if tm is not None and hasattr(tm, 'get_window_stats'):
+                    metrics["lru_window"] = tm.get_lru_window_size()
+                    stats = tm.get_window_stats()
+                    if stats:
+                        metrics["lru_window_stats"] = {
+                            k: stats.get(k) for k in
+                            ("window_size", "window_target", "max_window_size", "mandatory",
+                             "protected", "protect_min_score", "relevant_candidates",
+                             "activated_mandatory", "relevance_budget_trimmed",
+                             "candidates", "exposed_actions", "dropped", "auto_expanded",
+                             "keyword_domains", "active_domains",
+                             # 保底名单：基准报告需要能证明「保底集合里有没有任务期望工具」
+                             # （analyze 时不必再扒日志）；scorer 提供打分器统计
+                             "scorer", "protected_names", "dropped_names",
+                             "relevance_terms")
+                        }
+            except Exception as e:
+                print(f"    [Agent] 窗口统计采集失败（忽略）: {e}")
+
+            # ③ 泵事件等待 Agent 空闲（LLM 调用 + 工具执行期间主线程仍响应）
+            import time as _time
+            start = _time.time()
+            from PySide6.QtWidgets import QApplication
+            while agent.is_busy():
+                QApplication.processEvents()
+                if _time.time() - start > max_wait / 1000.0:
+                    print(f"    [Agent] 等待测试完成超时（>{max_wait}ms）")
+                    return False
+                _time.sleep(0.2)
+
+        finally:
+            # 任务结束恢复原策略，避免影响后续非基准运行
+            if strategy:
+                try:
+                    agent.set_tool_strategy(prev_strategy)
+                except Exception as e:
+                    print(f"    [Agent] 恢复策略失败（忽略）: {e}")
+
+        # ---- 消耗 token ----
+        try:
+            metrics["tokens_prompt"] = (getattr(_llm, "total_prompt_tokens", 0) or 0) - _tok_before_prompt
+            metrics["tokens_completion"] = (getattr(_llm, "total_completion_tokens", 0) or 0) - _tok_before_comp
+            metrics["tokens_consumed"] = metrics["tokens_prompt"] + metrics["tokens_completion"]
+        except Exception:
+            metrics["tokens_prompt"] = metrics["tokens_completion"] = metrics["tokens_consumed"] = 0
 
         # ④ 从会话记录判定
-        core_agent = getattr(agent, '_agent', None)
         messages = getattr(core_agent, 'messages', None) if core_agent else None
         if not messages:
             print("    [Agent] 无会话记录可判定")
@@ -654,6 +725,11 @@ class BuiltinActions:
         task_ok = any((t.strip()) for t in assistant_texts) or (tool_calls and all(tc.get("ok") is True for tc in tool_calls))
         plan_ok = plan_found is not False
 
+        # 自停完整性判定（多步真实对话指令）：不强制命中某个目标工具，
+        # 只看 agent 是否自主、正确地完整执行到自然停止 —— 无报错 + 有最终回复 + 未跑飞。
+        # 业务错误不计入"访问/调用错"（命中率单独统计），故此处 no_error_ok 指调用层无崩溃。
+        self_stop_runner_ok = bool(tool_calls) and no_error_ok and task_ok
+
         # 防跑飞：工具调用过多，或反复调用同一工具（含失败重试）视为异常冗余，任务即使"完成"也不予通过
         _MAX_CALLS = 50
         _MAX_SAME = 4
@@ -671,7 +747,43 @@ class BuiltinActions:
                 else:
                     seq = 1
 
-        all_ok = expected_hit and no_error_ok and (plan_ok if require_plan else True) and task_ok and runaway_ok
+        if self_stop:
+            # agent 自停完整性：多轮完整执行 + 无调用错 + 有最终回复 + 未跑飞。
+            all_ok = self_stop_runner_ok and runaway_ok and (plan_ok if require_plan else True)
+        else:
+            all_ok = expected_hit and no_error_ok and (plan_ok if require_plan else True) and task_ok and runaway_ok
+
+        # ---- 基准测试指标：工具命中率 / 轮次 ----
+        # 命中定义（用户口径）=「正确访问」+「正确调用」：
+        #   - 访问错(unknown tool/未注册/not found) 或 调用错(bad arguments/Error executing) → 未命中
+        #   - 业务逻辑返回错误（如"已达最后一张图"）不算调用错，仍计为命中
+        try:
+            from core.agent.tool_strategy import classify_tool_hit
+            hit_calls = []
+            for tc in tool_calls:
+                hit, reason = classify_tool_hit(tc.get("result") or "", tc.get("ok") is not False)
+                hit_calls.append({
+                    "name": tc["name"],
+                    "hit": hit,
+                    "reason": reason,
+                    "ok": tc.get("ok"),
+                    "result": (tc.get("result") or "")[:200],
+                })
+            n_hit = sum(1 for c in hit_calls if c["hit"])
+            n_call = len(hit_calls)
+            metrics["tool_calls_total"] = n_call
+            metrics["tool_calls_hit"] = n_hit
+            metrics["tool_calls_miss"] = n_call - n_hit
+            metrics["hit_rate"] = round(n_hit / n_call, 4) if n_call else 1.0
+            metrics["missed_calls"] = [c for c in hit_calls if not c["hit"]]
+            # 轮次 = 本任务内带工具调用的 assistant 消息条数（LLM 工具调用循环次数）
+            metrics["rounds"] = sum(
+                1 for m in messages
+                if m.get("role") == "assistant" and m.get("tool_calls")
+            )
+        except Exception as e:
+            print(f"    [Agent] 命中率/轮次统计失败: {e}")
+            metrics.setdefault("hit_rate", 1.0)
 
         report = {
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -681,6 +793,7 @@ class BuiltinActions:
             "hint": bool(hint),
             "instruction": prompt,
             "passed": all_ok,
+            "mode": "self_stop" if self_stop else "expected_tool",
             "checks": {
                 "expected_tool_called": expected_hit,
                 "no_error": no_error_ok,
@@ -694,6 +807,7 @@ class BuiltinActions:
                 "final_reply": (assistant_texts[-1] if assistant_texts else "")[:300],
             },
             "tool_calls": [{"name": tc["name"], "arguments": tc["arguments"], "ok": tc["ok"]} for tc in tool_calls],
+            "metrics": metrics,
         }
         self._print_action_test_report(report, tool_calls)
         self._save_action_test_report(report, save_report)

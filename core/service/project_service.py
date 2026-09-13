@@ -5,7 +5,7 @@ import time
 from datetime import datetime
 from core.common.settings import settings
 from core.common.config import Config
-from core.common.project_settings import project_settings
+from core.common.project_settings import project_settings, RULES_SCHEMA_VERSION
 from core.common.image_utils import imread_unicode, imwrite_unicode
 from core.backend.formats import load_annotations as formats_load_annotations
 from core.common.action_registry import action
@@ -84,14 +84,16 @@ class ProjectService:
         return projects
 
     def get_default_rules(self):
-        """获取默认的自动标注规则"""
+        """获取默认的自动标注规则
+
+        仅置信度阈值默认启用；面积/宽高比/中心偏差等过滤规则默认全部禁用。
+        规则的「启用」状态由字段是否存在于 rules 中表示（apply_rules 只处理
+        存在的字段），因此这里的默认种子只包含启用项，与规则配置对话框的
+        复选框状态、以及预测实际使用的规则保持一致。
+        """
         return {
-            "max_instances": 100,
-            "conf_threshold": 0.5,
-            "area_range": [0.5, 1.0],          # 面积偏差范围 (下限，上限)
-            "aspect_ratio_range": [0.5, 0.5],   # 宽高比偏差范围 (下限，上限)
-            "center_range": [50.0, 50.0],       # 中心点偏差范围 (x, y)，单位像素
             "text": "",
+            "conf_threshold": 0.5,
             "mode": "reuse"                     # 拼接模式：reuse, grid, copy_paste
         }
 
@@ -165,7 +167,8 @@ class ProjectService:
             "image_count": self._get_image_count(name),
             "version_count": 0,
             "roi": None,
-            "rules": self.get_default_rules()
+            "rules": self.get_default_rules(),
+            "rules_schema": RULES_SCHEMA_VERSION
         }
 
         info_path = os.path.join(project_path, "project_info.json")
@@ -206,7 +209,8 @@ class ProjectService:
                 "image_count": 0,
                 "version_count": 0,
                 "roi": None,
-                "rules": self.get_default_rules()
+                "rules": self.get_default_rules(),
+                "rules_schema": RULES_SCHEMA_VERSION,
             }
 
             with open(os.path.join(project_path, "project_info.json"), 'w', encoding='utf-8') as f:
@@ -291,7 +295,8 @@ class ProjectService:
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "image_count": 0,
             "version_count": 0,
-            "rules": self.get_default_rules()
+            "rules": self.get_default_rules(),
+            "rules_schema": RULES_SCHEMA_VERSION
         }
         with open(os.path.join(project_path, "project_info.json"), 'w', encoding='utf-8') as f:
             json.dump(info, f, ensure_ascii=False, indent=4)
@@ -413,8 +418,15 @@ class ProjectService:
                 return False
 
     def update_project_rules(self, project_name, rules):
-        """更新项目的自动标注规则"""
-        return self._update_project_info(project_name, {"rules": rules})
+        """更新项目的自动标注规则
+
+        同时写入 rules_schema：新版本写出的规则一律是当前「绝对规则」版本，
+        避免下次加载时被旧版迁移逻辑再次清理。
+        """
+        return self._update_project_info(project_name, {
+            "rules": rules,
+            "rules_schema": RULES_SCHEMA_VERSION,
+        })
 
     def update_project_field(self, project_name, field, value):
         """更新项目配置中的指定字段"""

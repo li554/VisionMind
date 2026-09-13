@@ -1,5 +1,5 @@
 import traceback
-from PySide6.QtCore import Qt, Signal, QPointF, QRectF, QThread, QSize, QPoint, Slot
+from PySide6.QtCore import Qt, Signal, QPointF, QRectF, QSize, QPoint, Slot
 from PySide6.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QCursor, QPolygonF, QTransform, QImageReader
 from PySide6.QtWidgets import QWidget
 from PySide6.QtCore import Qt
@@ -8,51 +8,8 @@ import cv2
 from core.common.project_settings import project_settings
 from core.common.settings import settings
 from core.common.action_registry import action
-
-class ImageLoader(QThread):
-    finished = Signal(object, float, object)  # image (QImage), display_scale, original_size (QSize)
-    error = Signal(str)
-
-    def __init__(self, path, max_dim=4096):
-        super().__init__()
-        self.path = path
-        self.max_dim = max_dim
-
-    def run(self):
-        try:
-            reader = QImageReader(self.path)
-            if not reader.canRead():
-                self.error.emit(f"无法读取图片: {self.path}")
-                return
-
-            orig_size = reader.size()
-            w, h = orig_size.width(), orig_size.height()
-
-            # 决定是否降采样 (Proxy)
-            scale = 1.0
-            if w > self.max_dim or h > self.max_dim:
-                scale = self.max_dim / max(w, h)
-                new_size = QSize(int(w * scale), int(h * scale))
-                reader.setScaledSize(new_size)
-
-            img = reader.read()
-            if img is None or img.isNull():
-                self.error.emit("图片加载失败 (数据损坏或内存不足)")
-            else:
-                # 确保信号参数类型正确
-                try:
-                    self.finished.emit(img, float(scale), orig_size)
-                except Exception as emit_err:
-                    print(f"[ImageLoader] Signal emit error: {emit_err}")
-                    traceback.print_exc()
-                    self.error.emit(f"信号发送失败: {emit_err}")
-        except Exception as e:
-            error_msg = f"图片加载出错: {str(e)}"
-            print(f"[ImageLoader] {error_msg}")
-            traceback.print_exc()
-            if settings.DEBUG:
-                raise
-            self.error.emit(error_msg)
+from core.common.background_task import BackgroundTaskRunner
+from .image_decode_service import ImageDecodeService
 
 class DrawingMode:
     EDIT = 0
@@ -88,12 +45,24 @@ class DrawingWidget(QWidget):
         super().__init__(parent)
         self._service = service
         self._is_clearing = False  # 标志：正在清理中，防止 paintEvent 访问无效数据
-        self._load_generation = 0  # 加载代次计数器，防止过期的异步信号导致闪退
-        self.image = None  # 当前图片
-        self.pixmap = None  # 当前pixmap
-        self.original_image_size = QSize(0, 0)
-        self.display_scale = 1.0  # 显示缩放比例
-        self.loader = None
+        # 注意：`image` / `pixmap` / `original_image_size` / `display_scale` /
+        # `current_image_path` 以及加载代次，全部是**只读 property**，真值在
+        # `service.session`（唯一状态所有者）。widget 刻意不再自己存一份 ——
+        # 审计 W2 的根因正是 interface / service / widget 各存一份，使
+        # "(图 N-1 的度量) + (图 N 的标注)" 这种算错坐标的状态可以出现。
+        # 后台解码执行器：线程由 QThreadPool 持有，widget 既不创建也不丢弃 QThread，
+        # 因此不可能出现"QThread: Destroyed while thread is still running"。
+        self._decoder = ImageDecodeService(self._is_generation_current, parent=self)
+        self._decoder.ready.connect(self._on_image_decoded,
+                                    type=Qt.ConnectionType.QueuedConnection)
+        self._decoder.failed.connect(self._on_image_decode_failed,
+                                    type=Qt.ConnectionType.QueuedConnection)
+
+        # 增强图生成器：LibLLIE + numpy 是 CPU 密集操作，原先在 GUI 线程同步执行，
+        # 每次切图提交都会冻结界面（审计 D17）。放到单独的线程上，结果带代次校验。
+        self._enhancer_runner = BackgroundTaskRunner(parent=self, max_threads=1,
+                                                    name="canvas.enhance")
+        self._pending_enhance_request = None
 
         # View state
         self.zoom = 1.0  # 缩放级别
@@ -160,7 +129,8 @@ class DrawingWidget(QWidget):
         # 图像增强相关
         self._enhanced_pixmap = None  # 增强后的pixmap缓存
         self._show_enhanced = False  # 当前是否显示增强图
-        self._current_image_path = None  # 当前图片路径，用于生成增强图
+        self._enhance_requested = False  # 用户已请求增强，生成完成后自动切换显示
+        self._enhancer_unavailable = False  # 增强器不可用（如缺少 libllie）时不再重试
         self._llie_enhancer = None  # LibLLIE增强器实例缓存
 
     @property
@@ -178,6 +148,60 @@ class DrawingWidget(QWidget):
         """从 service 读取隐藏索引集合"""
         return self._service.hidden_indices if self._service else set()
 
+    # ---- 以下全部是 session 的**只读投影**：widget 不持有第二份真值 ----
+
+    @property
+    def session(self):
+        return getattr(self._service, "session", None) if self._service is not None else None
+
+    @property
+    def generation(self):
+        """当前加载代次（权威在 session）。"""
+        session = self.session
+        return session.generation if session is not None else 0
+
+    @property
+    def is_committed(self):
+        """像素与度量是否已属于**当前**图 —— 交互与坐标换算的唯一闸门。"""
+        session = self.session
+        return bool(session is not None and session.is_committed)
+
+    @property
+    def current_image_path(self):
+        session = self.session
+        return session.path if session is not None else None
+
+    @property
+    def image(self):
+        session = self.session
+        return session.image if session is not None else None
+
+    @property
+    def pixmap(self):
+        session = self.session
+        return session.pixmap if session is not None else None
+
+    @property
+    def original_image_size(self):
+        session = self.session
+        return session.original_image_size if session is not None else QSize(0, 0)
+
+    @property
+    def display_scale(self):
+        session = self.session
+        return session.display_scale if session is not None else 1.0
+
+    def _interaction_ready(self):
+        """交互闸门：**像素与标注都就绪**时才接受鼠标/键盘/滚轮与坐标换算。
+
+        用 session.is_ready（而不只是 is_committed）：标注装载（后台 I/O）完成前
+        不允许绘制，否则刚画的内容会被随后到达的"这张图既有标注"整体替换掉。
+        这也是审计 W2 的根治点：未就绪时 `original_image_size` / `zoom` /
+        `pan_offset` 都不属于当前图，任何 `to_image_coords` 都会算错，一落盘就是错标。
+        """
+        session = self.session
+        return bool(session is not None and session.is_ready)
+
     @property
     def secondary_annotation_map(self):
         """从 service 读取主副标注映射"""
@@ -185,11 +209,87 @@ class DrawingWidget(QWidget):
 
     @property
     def persistent_roi(self):
-        return project_settings.get("roi")
+        """持久化的 ROI 框 [x, y, w, h]，**读取时校验**（审计 D18）。
+
+        这个值来自 `project_info.json` 的裸 JSON，没有任何 schema 校验。原先有 5 处
+        直接 `px, py, pw, ph = self.persistent_roi`，其中两处在 `paintEvent` 里 ——
+        一旦值是 None / 长度不对 / 元素不是数字，解包就抛异常，而 `paintEvent` 抛出异常
+        会让**画布永久停止重绘**（用户看到的是"界面卡住了"）。
+
+        因此把校验收敛到唯一入口：非法值一律当作"没有 ROI"（返回 None），
+        这样所有使用点都天然安全（它们本来就都写成 `if self.persistent_roi:` 再解包）。
+        """
+        value = project_settings.get("roi")
+        return self._coerce_roi(value)
+
+    @staticmethod
+    def _coerce_roi(value):
+        """把任意来源的 ROI 值规范成 4 元组或 None。"""
+        if value is None or isinstance(value, (str, bytes, bool)):
+            return None
+        try:
+            items = list(value)
+        except TypeError:
+            return None
+        if len(items) != 4:
+            return None
+        out = []
+        for v in items:
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                return None
+            if v != v or v in (float("inf"), float("-inf")):   # NaN / inf
+                return None
+            out.append(v)
+        return tuple(out)
 
     @persistent_roi.setter
     def persistent_roi(self, value):
         project_settings.set("roi", value)
+
+    @staticmethod
+    def _is_polygon_like(poly):
+        """判断一个多边形元素是否**至少像**一条多边形（可 len、长度>=3）。
+
+        审计 D18：`any(len(p) >= 3 for p in polys)` 对 `[1.0, 2.0]`、`[None]` 这类
+        畸形元素会抛 TypeError，而它在 paintEvent 的帧循环里 —— 一次异常就让画布
+        永久停止重绘。这里把"能不能 len"变成显式判断。
+        """
+        if poly is None or isinstance(poly, (str, bytes, bool)):
+            return False
+        try:
+            return len(poly) >= 3
+        except TypeError:
+            return False
+
+    @staticmethod
+    def _safe_bbox(ann, default=(0.0, 0.0, 0.0, 0.0)):
+        """取标注的 bbox 并保证返回 **4 个数值**（审计 D18）。
+
+        `ann.get('bbox', default)` 只在键缺失时生效；键存在但值为 None / 长度不为 4 /
+        元素不是数字时仍会返回坏值，随后 `bx, by, bw, bh = ...` 抛 TypeError。
+        由于这段代码在 `paintEvent` 的帧循环里，一次异常就会让整张画布**永久停止重绘**。
+
+        这里对每个元素做数值规范化（非数字 -> 用 default 的对应项），
+        保证绘制路径永远不会因为数据畸形而中断。
+        """
+        if not isinstance(ann, dict):
+            return default
+        raw = ann.get("bbox")
+        if raw is None or isinstance(raw, (str, bytes, bool)):
+            return default
+        try:
+            items = list(raw)
+        except TypeError:
+            return default
+        if len(items) != 4:
+            return default
+        out = []
+        for idx, v in enumerate(items):
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v:
+                out.append(default[idx])
+            else:
+                out.append(float(v))
+        return tuple(out)
 
     def set_category_colors(self, colors):
         """设置类别颜色映射，统一归一化为 QColor（兼容 QColor/str/list 格式）"""
@@ -290,195 +390,342 @@ class DrawingWidget(QWidget):
             self.status_color = QColor(200, 200, 200)
         self.update()
 
-    @action("interact.toggle_enhance", description="切换原图/增强图显示。\n- 增强图使用 LibLLIE 模型对低光照图像进行自动增强\n- 需要先加载图像，首次切换会触发增强生成（较慢）\n- 再次调用可切回原图", category="画布", scope="agent")
+    @action("interact.toggle_enhance", description="切换原图/增强图显示。\n- 增强图使用 LibLLIE 模型对低光照图像进行自动增强\n- 需要先加载图像；首次切换会在**后台**生成增强图（较慢），完成后自动切换显示\n- 再次调用可切回原图", category="画布", scope="agent")
     def toggle_enhance(self):
-        """切换原图/增强图显示"""
+        """切换原图/增强图显示（增强图生成在后台）。"""
         if not self.image or not self.pixmap:
             return "错误: 没有加载图像，无法切换增强显示"
 
         if self._show_enhanced:
             self._show_enhanced = False
+            self._enhance_requested = False
             self.enhance_toggled.emit(False)
             self.update()
             return False
         else:
-            if self._enhanced_pixmap is None:
-                self._generate_enhanced_pixmap()
             if self._enhanced_pixmap is not None:
                 self._show_enhanced = True
                 self.enhance_toggled.emit(True)
                 self.update()
                 return True
-            return "错误: 增强图生成失败，请检查图像是否有效"
+            # 需要生成：**后台**执行，完成后自动切到增强显示。
+            # 原先这里同步调用 LibLLIE + numpy，每次切图提交都会冻结 GUI（审计 D17）。
+            self._enhance_requested = True
+            if not self._generate_enhanced_pixmap():
+                self._enhance_requested = False
+                return "错误: 增强图生成失败，请检查图像是否有效"
+            self.status_text = "正在生成增强图..."
+            self.update()
+            return "增强图正在后台生成，完成后自动切换显示"
+
+    # ---- 增强图：后台生成 + 结果校验 + 代次守卫 ----
+
+    @staticmethod
+    def _normalize_enhanced_array(arr):
+        """把增强器返回值规范成 (h, w, 3) 的 uint8 连续数组。
+
+        审计 D17 的第二处缺陷：原实现直接 `h, w, ch = enhanced_arr.shape` 并用
+        `ch * w` 当 bytesPerLine 构造 QImage，对 dtype/通道数/连续性**零校验**
+        —— 返回 float32/uint16 时行距与真实不符，会逐行越界读 numpy 缓冲（花屏或崩溃）。
+        """
+        out = np.asarray(arr)
+        if out.ndim == 3 and out.shape[2] == 4:      # RGBA -> RGB
+            out = out[:, :, :3]
+        if out.ndim != 3 or out.shape[2] != 3:
+            raise ValueError("增强结果形状非法: %r" % (getattr(out, "shape", None),))
+        if out.shape[0] <= 0 or out.shape[1] <= 0:
+            raise ValueError("增强结果尺寸非法: %r" % (out.shape,))
+        if out.dtype != np.uint8:
+            out = np.clip(out, 0, 255).astype(np.uint8)
+        return np.ascontiguousarray(out)
+
+    def _ensure_enhancer(self):
+        """延迟创建增强器（只会在增强工作线程里被调用，单线程串行）。"""
+        if self._llie_enhancer is None:
+            from libllie.traditional.algorithms import LLIEnhancer
+            self._llie_enhancer = LLIEnhancer.create_enhancer('clahe', output_type='numpy')
+        return self._llie_enhancer
+
+    def _enhance_image_blocking(self, image, generation, path):
+        """在**工作线程**里执行增强。返回 (generation, path, enhanced_arr)。
+
+        QImage 是可重入的值类型、这里只读，且提交只会**替换引用**而不会改写对象，
+        因此跨线程读取安全（工作线程自己持有引用，对象不会被回收）。
+        """
+        img = image
+        if img.format() != QImage.Format.Format_RGB888:
+            img = img.convertToFormat(QImage.Format.Format_RGB888)
+        width, height = img.width(), img.height()
+        bpl = img.bytesPerLine()          # 行对齐后的字节数，可能大于 width*3
+        ptr = img.constBits()
+        if hasattr(ptr, 'setsize'):
+            ptr.setsize(height * bpl)
+        arr = np.frombuffer(ptr, np.uint8).reshape((height, bpl))[:, :width * 3]
+        arr = arr.reshape((height, width, 3))
+        enhanced = self._ensure_enhancer()(arr)
+        return generation, path, self._normalize_enhanced_array(enhanced)
 
     def _generate_enhanced_pixmap(self):
-        """使用LibLLIE生成增强图"""
-        try:
-            # 延迟初始化增强器
-            if self._llie_enhancer is None:
-                from libllie.traditional.algorithms import LLIEnhancer
-                self._llie_enhancer = LLIEnhancer.create_enhancer('clahe', output_type='numpy')
-            # 将QImage转换为numpy数组
-            img = self.image
-            if img.format() != QImage.Format.Format_RGB888:
-                img = img.convertToFormat(QImage.Format.Format_RGB888)
-            width = img.width()
-            height = img.height()
-            bpl = img.bytesPerLine()  # QImage行对齐后的字节数，可能大于 width*3
-            ptr = img.constBits()
-            # PySide6: constBits() 返回 memoryview，无需 setsize
-            if hasattr(ptr, 'setsize'):
-                ptr.setsize(height * bpl)
-            arr = np.frombuffer(ptr, np.uint8).reshape((height, bpl))
-            # 去除行尾padding，取前width*3列
-            arr = arr[:, :width * 3].reshape((height, width, 3))
-            # 执行增强
-            enhanced_arr = self._llie_enhancer(arr)
-            # 转换回QImage和QPixmap
-            h, w, ch = enhanced_arr.shape
-            enhanced_img = QImage(enhanced_arr.data, w, h, ch * w, QImage.Format.Format_RGB888)
-            # 需要复制数据，因为numpy数组可能被回收
-            self._enhanced_pixmap = QPixmap.fromImage(enhanced_img.copy())
-        except Exception as e:
-            print(f"[DrawingWidget] 图像增强失败: {e}")
-            traceback.print_exc()
+        """请求生成增强图（**后台**，CPU 密集）。返回是否已受理。"""
+        session = self.session
+        if session is None or not session.is_committed or session.image is None:
             self._enhanced_pixmap = None
+            return False
+        if getattr(self, "_enhancer_unavailable", False):
+            return False
+        request = {"generation": session.generation, "path": session.path}
+        runner = self._enhancer_runner
+        if runner.busy():
+            self._pending_enhance_request = request      # 最新优先
+            return True
+        return self._start_enhance(request, session.image)
+
+    def _start_enhance(self, request, image):
+        started = self._enhancer_runner.start(
+            lambda: self._enhance_image_blocking(image, request["generation"],
+                                                 request["path"]),
+            on_result=self._on_enhance_ready,
+            on_error=self._on_enhance_failed,
+        )
+        if not started:
+            self._pending_enhance_request = request
+        return started
+
+    def _on_enhance_ready(self, payload):
+        try:
+            generation, path, enhanced = payload
+            session = self.session
+            # 代次 + 路径双重守卫：过期结果绝不安装（否则会把 A 图的增强图贴到 B 图上）
+            if session is None or generation != session.generation or path != session.path:
+                print(f"[DrawingWidget] 丢弃过期增强结果: {path} (代次 {generation})")
+            else:
+                height, width = enhanced.shape[0], enhanced.shape[1]
+                # 已经是连续 uint8 RGB，行距就是 3*width，不会越界
+                qimg = QImage(enhanced.data, width, height, 3 * width,
+                              QImage.Format.Format_RGB888)
+                self._enhanced_pixmap = QPixmap.fromImage(qimg.copy())
+                if self._enhance_requested:
+                    self._show_enhanced = True
+                    self.enhance_toggled.emit(True)
+                self.status_text = None
+                self.update()
+        finally:
+            self._drain_pending_enhance_request()
+
+    def _on_enhance_failed(self, message):
+        print(f"[DrawingWidget] 图像增强失败: {message}")
+        # 增强器不可用（例如缺少 libllie）时不要每次切图都重试一遍
+        if "libllie" in message or "ImportError" in message:
+            self._enhancer_unavailable = True
+            print("[DrawingWidget] 增强器不可用，本次会话内不再尝试")
+        self._enhance_requested = False
+        self.status_text = None
+        self.update()
+        self._drain_pending_enhance_request()
+
+    def _drain_pending_enhance_request(self):
+        pending = self._pending_enhance_request
+        self._pending_enhance_request = None
+        if pending is None:
+            return
+        session = self.session
+        if session is None or pending["generation"] != session.generation \
+                or pending["path"] != session.path or session.image is None:
+            return                                   # 过期请求直接丢弃
+        self._start_enhance(pending, session.image)
+
+    def _is_generation_current(self, generation):
+        """代次权威的唯一出口。
+
+        会被解码工作线程只读调用：只读取一个 Python int（GIL 保证原子性），
+        不触碰任何 Qt 对象，因此跨线程安全。权威在 session。
+        """
+        return generation == self.generation
+
+    def _reset_transient_drag_state(self):
+        """清掉全部"下标索引 / 绑定坐标"的瞬时交互状态（审计 D7 / D16）。
+
+        这些状态在切图时若不清，就会与新图的标注和度量结合使用：
+          * 按住左键切图后释放 -> 用旧图坐标向新图提交标注，而
+            `annotation_modified` 会立即无条件落盘、撤销栈又已被清空 -> 静默数据损坏；
+          * `batch_selected_points` 指向新图里另一个顶点 -> 按 Delete 删错顶点；
+          * `hover_point` / `obb_points` / `is_near_first_point` 让下一次点击落在错对象上。
+        因此任何"图像被替换"的时刻（set_image / clear / 提交释放被拒）都必须调用它。
+        """
+        self.rect_start = None
+        self.rect_end = None
+        self.current_poly = []
+        self.obb_points = []
+        self.sam_points = []
+        self.dragging_annotation = None
+        self.drag_start_img_pos = None
+        self.dragging_point = None
+        self.batch_selecting = False
+        self.batch_selection_start = None
+        self.batch_selection_end = None
+        self.batch_selected_indices = []
+        self.batch_selected_points = []
+        self.right_button_held = False
+        self.right_press_pos = None
+        self._right_dragging = False
+        self.right_press_time = 0
+        self.hover_point = None
+        self.is_near_first_point = False
+        self.ignore_next_left_press = False
+        self.hover_index = -1
+        self.selected_index = -1
+        self.focused_index = -1
+
+    def cancel_pending_load(self):
+        """作废所有在途解码结果（非阻塞）。
+
+        线程由 QThreadPool 持有，因此这里既不需要也不允许 wait/terminate：
+        递增代次后，在途任务在提交结果前会自行发现已过期并丢弃。
+        """
+        session = self.session
+        if session is not None:
+            session.cancel_pending_load()
+
+    def drain(self, timeout_ms=5000):
+        """确定性排空后台解码（关闭 / 插件卸载路径调用）。
+
+        先作废在途结果让任务尽快返回，再等待线程池排空。返回是否在超时内排空。
+        只能在 GUI 线程调用。实现 `Drainable` 契约，供应用级关闭协调器统一调用。
+        """
+        self.cancel_pending_load()
+        ok = self._decoder.drain(timeout_ms)
+        if not ok:
+            print(f"[DrawingWidget] 解码线程池未在 {timeout_ms}ms 内排空")
+        # 增强图线程池也必须在关闭前排空（它同样会持有 numpy/QImage 内存）
+        if not self._enhancer_runner.drain(timeout_ms):
+            print(f"[DrawingWidget] 增强线程未在 {timeout_ms}ms 内排空")
+        return ok
+
+    def wait_io_idle(self, timeout_ms=3000):
+        """等待在途解码结束但**不作废代次、不取消任何请求**。
+
+        专供"需要释放图片文件句柄"的正常交互路径（例如删除图片文件）调用：
+        Windows 上解码进行中 `os.remove` 会 WinError 32。与 drain() 的区别是
+        它没有副作用——不会让当前正在加载的图片被丢弃。
+        """
+        return self._decoder.wait_idle(timeout_ms)
 
     def set_image(self, image_path):
-        # 递增加载代次，使之前排队的信号失效
-        self._load_generation += 1
-        current_gen = self._load_generation
+        """开始加载新图 —— **唯一提交入口**。
 
-        # 非阻塞地停掉旧的加载线程:仅请求中断并断开其信号,不在此同步
-        # wait(1000)。旧 loader 由 on_image_loaded 的代次守卫负责丢弃过期
-        # 结果,因此快速连续切换不会再阻塞主线程。
-        if hasattr(self, 'loader') and self.loader:
-            if self.loader.isRunning():
-                try:
-                    self.loader.requestInterruption()
-                except Exception as e:
-                    print(f"[DrawingWidget] Error interrupting loader: {e}")
-            try:
-                self.loader.finished.disconnect()
-                self.loader.error.disconnect()
-            except:
-                pass
-            self.loader = None
+        `session.begin_load()` 换代次、改路径，并**清空"已提交"的像素与度量**。
+        因此在新图提交之前 `is_committed` 为 False，交互与坐标换算全部被闸门挡住，
+        不会出现"图 N 的标注 + 图 N-1 的度量"这种会算错坐标的状态（审计 W2）。
+        这里不再有"丢弃运行中的 QThread"那一步 —— abort 的根因就在那里。
+        """
+        session = self.session
+        if session is None:
+            return
+        generation = session.begin_load(image_path)
 
-        self.image = None
-        self.pixmap = None
-        self.sam_points = []
-        self.current_poly = []
+        # 清掉全部瞬时交互状态：切图后它们指向的是**上一张图**的标注下标与坐标
+        self._reset_transient_drag_state()
         self.status_text = None
 
         # 切换图片时清除增强缓存（保留增强状态，新图加载后自动生成增强图）
-        self._current_image_path = image_path
         self._enhanced_pixmap = None
 
         try:
-            self.loader = ImageLoader(image_path)
-            self.loader._generation = current_gen  # 记录加载代次
-            self.loader.finished.connect(self.on_image_loaded, type=Qt.ConnectionType.QueuedConnection)
-            self.loader.error.connect(self.on_image_load_error, type=Qt.ConnectionType.QueuedConnection)
-            self.loader.start()
+            self._decoder.request(generation, image_path)
         except Exception as e:
-            print(f"[DrawingWidget] Error starting image loader: {e}")
+            print(f"[DrawingWidget] Error requesting image decode: {e}")
             traceback.print_exc()
 
-    def on_image_load_error(self, error_msg):
-        print(f"[DrawingWidget] Image load error: {error_msg}")
+    def _on_image_decode_failed(self, generation, path, message):
+        # 过期失败不打扰用户（快速切图时会自然产生一批）
+        if generation != self.generation:
+            return
+        print(f"[DrawingWidget] Image load error: {path}: {message}")
+        self.update()
 
     def set_qimage(self, q_image):
+        """用现成的 QImage 直接提交，取代当前图。
+
+        走 session 的"换代次 + 原子提交"：`begin_load()` 先作废在途解码，因此
+        此前同代次的解码结果不可能再覆盖它（审计指出原先 set_qimage 不换代次，
+        在途解码到达时会静默覆盖刚设的图）。
+        """
         if q_image.isNull():
             return
-        self.image = q_image
-        self.pixmap = QPixmap.fromImage(self.image)
-        self.original_image_size = q_image.size()
-        self.display_scale = 1.0
+        session = self.session
+        if session is None:
+            return
+        generation = session.begin_load(session.path)
+        pixmap = QPixmap.fromImage(q_image)
+        if not session.commit_pixels(generation, q_image, pixmap, q_image.size(), 1.0):
+            return
         self.sam_points = []
         self.current_poly = []
         self.status_text = None
-        # 如果增强模式开启，自动为新图生成增强图
-        if self._show_enhanced:
+        # 增强了就保持增强：_enhance_requested 表示用户已请求，跨切图继续生成
+        if self._show_enhanced or self._enhance_requested:
             self._generate_enhanced_pixmap()
         self.reset_view()
         self.update()
 
-    def on_image_loaded(self, image, scale, original_size):
-        # 如果正在清理，忽略加载结果
+    def _on_image_decoded(self, generation, path, image, scale, original_size):
+        """解码完成（GUI 线程）：代次与路径双重守卫通过后**原子提交**像素与度量。"""
+        # 清理中：画布状态正在被重置，丢弃结果
         if self._is_clearing:
             return
 
-        # 检查加载代次，丢弃过期的异步信号（防止快速切换图片时闪退）
-        try:
-            sender = self.sender()
-            if sender and hasattr(sender, '_generation'):
-                if sender._generation != self._load_generation:
-                    return
-        except RuntimeError:
-            return  # sender对象可能已被删除
+        # 代次守卫：快速切图时必然有一批过期结果到这里，必须丢弃
+        if generation != self.generation:
+            return
+        # 路径守卫（双保险）：代次与目标图必须同时一致，
+        # 避免任何"把 A 的像素提交到 B"的可能
+        if path != self.current_image_path:
+            return
+
+        session = self.session
+        if session is None:
+            return
 
         try:
-            # 验证参数
             if image is None:
-                print("[DrawingWidget] on_image_loaded: image is None")
+                print("[DrawingWidget] _on_image_decoded: image is None")
                 return
             if hasattr(image, 'isNull') and image.isNull():
-                print("[DrawingWidget] on_image_loaded: image is null")
+                print("[DrawingWidget] _on_image_decoded: image is null")
                 return
 
-            self.image = image
-            self.pixmap = QPixmap.fromImage(self.image)
-            self.display_scale = scale
-            self.original_image_size = original_size
+            # 原子提交：像素 + 度量 + 已提交代次一次性落地；任一代次不符则整体丢弃
+            if not session.commit_pixels(generation, image, QPixmap.fromImage(image),
+                                         original_size, scale):
+                return
 
-            # 如果增强模式开启，自动为新图生成增强图
-            if self._show_enhanced:
+            # 增强了就保持增强：_enhance_requested 表示用户已请求，跨切图继续生成
+            if self._show_enhanced or self._enhance_requested:
                 self._generate_enhanced_pixmap()
 
-            # Do NOT clear annotations here, as they might have been loaded
-            # by the interface immediately after calling set_image()
             self.reset_view()
             self.update()
 
             # 发送图片加载完成信号
             self.image_loaded.emit()
         except Exception as e:
-            print(f"[DrawingWidget] Error in on_image_loaded: {e}")
+            print(f"[DrawingWidget] Error in _on_image_decoded: {e}")
             traceback.print_exc()
 
     def clear(self):
-        """Clears the canvas and all associated data."""
-        self._is_clearing = True
-        self._load_generation += 1  # 使排队的信号失效
-        try:
-            # 停止正在运行的图片加载线程
-            if hasattr(self, 'loader') and self.loader:
-                if self.loader.isRunning():
-                    try:
-                        self.loader.requestInterruption()
-                        if not self.loader.wait(500):
-                            self.loader.terminate()
-                            self.loader.wait(200)
-                    except Exception as e:
-                        print(f"[DrawingWidget] Error stopping loader in clear: {e}")
-                    try:
-                        self.loader.finished.disconnect()
-                        self.loader.error.disconnect()
-                    except:
-                        pass
-                self.loader = None
+        """Clears the canvas and all associated data.
 
-            self.image = None
-            self.pixmap = None
-            self.original_image_size = QSize(0, 0)
-            self.display_scale = 1.0
-            self.sam_points = []
-            self.current_poly = []
+        非阻塞：递增代次就让所有在途解码作废，这里既不等待也不强杀线程
+        （原先的 wait(500) -> terminate() 会在半解码状态下杀死持有 Qt 图像
+        插件内部锁的线程，后续解码可能死锁）。确定性排空由 drain() 在关闭路径负责。
+        """
+        self._is_clearing = True
+        try:
+            session = self.session
+            if session is not None:
+                session.clear()
+            self._reset_transient_drag_state()
             self.status_text = None
-            self.hover_index = -1
-            self.selected_index = -1
-            self._current_image_path = None
             self._enhanced_pixmap = None
             if self._show_enhanced:
                 self._show_enhanced = False
@@ -515,6 +762,12 @@ class DrawingWidget(QWidget):
         return transform
 
     def to_image_coords(self, pos):
+        # 未提交时**不做**坐标换算：此刻 original_image_size / zoom / pan_offset
+        # 都不属于当前图，算出来的坐标会落成错标（审计 W2 的根治点）。
+        # 调用方本来就有 None 分支；paintEvent 的 "pixmap is None 就返回" 与本闸门
+        # 等价（commit_pixels 同时设置 pixmap 与 committed_generation）。
+        if not self._interaction_ready():
+            return None
         inv_transform, ok = self.get_transform().inverted()
         if not ok: return None
         p = inv_transform.map(QPointF(pos))
@@ -573,6 +826,11 @@ class DrawingWidget(QWidget):
         self.update()
 
     def toggle_roi_zoom(self):
+        # 未提交时 original_image_size 是 QSize(0,0)，下面按它做的比值会出现除零
+        # 与奇异变换。虽然 to_image_coords 的闸门已经让这条路径短路，这里仍显式拒绝，
+        # 避免将来有人改动顺序后重新引入 ZeroDivisionError。
+        if not self._interaction_ready():
+            return "错误: 图像尚未加载完成，无法切换 ROI 缩放"
         """Toggles between ROI zoom and full view."""
         if not self.persistent_roi:
             self.reset_view()
@@ -609,12 +867,9 @@ class DrawingWidget(QWidget):
         if not self.pixmap:
             # 空画布填充与界面/侧栏背景同色（#1a1a1a），保证无接缝色差
             painter.fillRect(self.rect(), QColor(26, 26, 26))
-            try:
-                if self.loader and self.loader.isRunning():
-                    painter.setPen(Qt.GlobalColor.white)
-                    painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "正在加载超大图像...")
-            except RuntimeError:
-                pass  # loader可能已被删除
+            if self._decoder.is_busy():
+                painter.setPen(Qt.GlobalColor.white)
+                painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "正在加载超大图像...")
             return
 
         # Defensive zoom check to avoid ZeroDivisionError
@@ -659,8 +914,12 @@ class DrawingWidget(QWidget):
 
                 # Draw Polygons (Masks or OBB) - based on annotation content, not global task_mode
                 # rectangle类型优先使用bbox渲染，即使有polygons数据也不画多边形
-                has_polygons = (ann.get('polygons') and any(len(p) >= 3 for p in ann.get('polygons', []))
-                                and ann.get('shape_type') != 'rectangle')
+                # `any(len(p) >= 3 ...)` 对畸形元素（如 polygons=[1.0, 2.0] 或 [None]）会抛
+                # TypeError —— 这里在 paintEvent 内，异常会让画布永久停止重绘（审计 D18）。
+                # 因此显式判断元素是否"像一条多边形"（可 len 的可迭代对象）。
+                raw_polys = ann.get('polygons')
+                has_polygons = bool(raw_polys) and ann.get('shape_type') != 'rectangle' \
+                    and any(self._is_polygon_like(p) for p in raw_polys)
                 if has_polygons:
                     painter.setPen(QPen(edge_color, 2 / safe_zoom))
                     painter.setBrush(fill_color)
@@ -700,7 +959,10 @@ class DrawingWidget(QWidget):
                         painter.drawPolygon(qpoly)
 
                 # Draw Bbox
-                bx, by, bw, bh = ann.get('bbox', [0, 0, 0, 0])
+                # 必须用**校验过的** bbox（审计 D18）：`ann.get('bbox', [0,0,0,0])` 只在
+                # 键**缺失**时给默认值，键存在但为 None / 长度不对时依然返回坏值，
+                # 解包即抛 TypeError。而 paintEvent 抛异常会让**画布永久停止重绘**。
+                bx, by, bw, bh = self._safe_bbox(ann)
                 painter.setPen(QPen(edge_color, 2 / safe_zoom))
                 painter.setBrush(Qt.BrushStyle.NoBrush)
                 if not has_polygons:
@@ -728,7 +990,7 @@ class DrawingWidget(QWidget):
 
                 # Draw Label Text - Positioned above the mask/bbox
                 if self.show_labels:
-                    bx, by, bw, bh = ann.get('bbox', [0, 0, 0, 0])
+                    bx, by, bw, bh = self._safe_bbox(ann)
                     painter.save()
 
                     # 判断是否有副标注匹配
@@ -1057,6 +1319,10 @@ class DrawingWidget(QWidget):
             painter.drawLine(local_pos.x(), 0, local_pos.x(), self.height())
 
     def wheelEvent(self, event):
+        # 未提交（无图或在途解码）时不改 zoom/pan：否则会被随后的提交静默覆盖，
+        # 用户表现为"滚轮没反应"但状态已被污染
+        if not self._interaction_ready():
+            return
         # Zoom at mouse position
         # Use position() for PySide6 compatibility (pos() is deprecated)
         mouse_pos = event.position().toPoint() if hasattr(event, 'position') else event.pos()
@@ -1211,6 +1477,11 @@ class DrawingWidget(QWidget):
         return inside
 
     def mousePressEvent(self, event):
+        # 交互闸门：像素未提交（无图 / 正在解码）时不接受任何绘制或编辑输入。
+        # 这是审计 D7 与 W2 的共同修复点 —— 按住左键切图后，若继续用旧图的坐标系
+        # 向新图提交标注，会即时落盘且不可撤销。
+        if not self._interaction_ready():
+            return
         # Use position() for PySide6 compatibility (pos() is deprecated)
         mouse_pos = event.position().toPoint() if hasattr(event, 'position') else event.pos()
         self.last_mouse_pos = QPointF(mouse_pos)
@@ -1751,6 +2022,8 @@ class DrawingWidget(QWidget):
             ann['bbox'] = [float(x1), float(y1), float(x2 - x1), float(y2 - y1)]
 
     def mouseMoveEvent(self, event):
+        if not self._interaction_ready():
+            return
         # Use position() for PySide6 compatibility (pos() is deprecated)
         mouse_pos = event.position().toPoint() if hasattr(event, 'position') else event.pos()
         curr_pos = QPointF(mouse_pos)
@@ -1902,6 +2175,11 @@ class DrawingWidget(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, event):
+        if not self._interaction_ready():
+            # 按下时已提交、释放时图像已换：必须丢弃这次释放，并清掉可能残留的
+            # 拖拽/框选瞬时状态，否则下一次事件会拿旧坐标对新图动手（D7）。
+            self._reset_transient_drag_state()
+            return
         if not self.interactive:
             if event.button() == Qt.MouseButton.MiddleButton:
                 self.setCursor(Qt.CrossCursor)
@@ -1994,6 +2272,10 @@ class DrawingWidget(QWidget):
         self.update()
 
     def keyPressEvent(self, event):
+        # 交互闸门：未提交时不处理快捷键。否则 Backspace 会拿 stale 的 hover_point
+        # 去删另一张图/另一个标注的顶点（审计 D7），下标还可能越界。
+        if not self._interaction_ready():
+            return
         if event.key() == Qt.Key.Key_Escape:
             self.current_poly = []
             self.sam_points = []
@@ -2065,6 +2347,8 @@ class DrawingWidget(QWidget):
 
     @action("interact.add_sam_point", description="添加 SAM 正/负样本点进行交互式分割。\n- x, y 为图像坐标（像素值），不受画布缩放影响\n- 必须先通过 set_drawing_mode('sam') 切换到 SAM 模式\n- positive=true 为正样本（属于目标区域）\n- positive=false 为负样本（不属于目标区域）\n- 添加后观察实时分割预览，可连续添加多个点优化\n- 完成后调用 confirm_sam_annotation() 确认分割结果\n\n坐标系统说明：本软件有两套坐标系统。标注操作（如 SAM 打点、绘制多边形）使用图像坐标，原点在图像左上角，单位像素，不受画布缩放平移影响。不要用鼠标模拟操作（input.mouse 的 click/move）传入图像坐标进行标注，标注请直接调用本方法。鼠标模拟操作使用控件坐标，原点在画布控件左上角，受缩放和平移影响。", category="画布", params={"x": "float", "y": "float", "positive": "bool"}, scope="agent")
     def add_sam_point(self, x: float, y: float, positive: bool = True):
+        if not self._interaction_ready():
+            return "错误: 图像尚未加载完成（像素未提交），此时按旧图分辨率校验坐标会落成错标"
         if self.mode != DrawingMode.SAM:
             return "错误: 当前不是 SAM 模式，请先调用 set_drawing_mode('sam') 切换模式"
         image_w = self.original_image_size.width()
@@ -2078,6 +2362,8 @@ class DrawingWidget(QWidget):
 
     @action("interact.add_polygon_vertex", description="添加多边形顶点。\n- x, y 为图像坐标（像素值）\n- 必须先通过 set_drawing_mode('polygon') 切换到多边形模式\n- 每次调用添加一个顶点，连续调用可勾勒多边形轮廓\n- 添加至少3个顶点后调用 close_polygon() 闭合", category="画布", params={"x": "float", "y": "float"}, scope="agent")
     def add_polygon_vertex(self, x: float, y: float):
+        if not self._interaction_ready():
+            return "错误: 图像尚未加载完成（像素未提交），此时按旧图分辨率校验坐标会落成错标"
         if self.mode != DrawingMode.POLYGON:
             return "错误: 当前不是多边形模式，请先调用 set_drawing_mode('polygon') 切换模式"
         image_w = self.original_image_size.width()

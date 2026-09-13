@@ -13,6 +13,9 @@ DynamicToolManager — 上下文感知的动态工具管理器
 5. 合并 recent_categories（最近使用的工具分类）
 6. 附加显式激活的工具（_activated_tools LRU 队列），即使其分类不在
    active_categories 中也保留，支持跨界面多轮对话
+7. 可选「窗口大小」（lru 策略的 window_size）：把暴露的 action 工具数裁到窗口内，
+   保底工具（LRU 激活 + 指令关键词命中）永不裁剪，超出时窗口自动扩张。
+   见 core/agent/tool_strategy.py 的 LRUStrategy 与 lru_window_size 设置项。
 """
 
 from collections import OrderedDict
@@ -90,6 +93,85 @@ class DynamicToolManager:
         self._main_window = main_window
         # LRU 工具激活队列：tool_name → token_count
         self._activated_tools: "OrderedDict[str, int]" = OrderedDict()
+        # 当前工具调度策略（默认 lru = 现状）。见 core/agent/tool_strategy.py
+        self._strategy = self._default_strategy()
+
+    def _default_strategy(self):
+        from core.agent.tool_strategy import create_strategy
+        return create_strategy("lru", self)
+
+    # ------------------------------------------------------------------
+    # 工具调度策略开关
+    # ------------------------------------------------------------------
+
+    def set_strategy(self, name_or_strategy):
+        """切换工具调度策略。
+
+        支持传入已注册策略名（当前只有 "lru"）或一个 ToolStrategy 实例
+        （用于自定义策略，无需注册）。
+        """
+        from core.agent.tool_strategy import create_strategy
+        if isinstance(name_or_strategy, str):
+            self._strategy = create_strategy(name_or_strategy, self)
+        else:
+            self._strategy = name_or_strategy
+        print(f"[DynamicToolManager] 切换工具调度策略: {self.strategy_name}")
+
+    def get_strategy(self):
+        """返回当前 ToolStrategy 实例。"""
+        if self._strategy is None:
+            self._strategy = self._default_strategy()
+        return self._strategy
+
+    # ------------------------------------------------------------------
+    # lru 窗口大小（暴露工具数量上限）
+    # ------------------------------------------------------------------
+
+    def get_lru_window_size(self) -> int:
+        """当前 lru 策略生效的窗口大小（0 = 不裁剪；非 lru 策略返回 0）。"""
+        strategy = self.get_strategy()
+        getter = getattr(strategy, "configured_window_size", None)
+        return int(getter()) if callable(getter) else 0
+
+    def set_lru_window_size(self, size: int, persist: bool = True) -> int:
+        """设置 lru 窗口大小（默认写入 core.json，可在设置界面/调试窗口修改后即时生效）。
+
+        当前策略不是 lru 时只持久化配置（切换回 lru 后生效），不改变正在运行的策略行为。
+
+        Returns:
+            设置后实际生效的窗口大小（非 lru 策略返回写入值）。
+        """
+        from core.agent.tool_strategy import LRUStrategy
+
+        size = max(0, int(size))
+        strategy = self.get_strategy()
+        if isinstance(strategy, LRUStrategy):
+            applied = strategy.set_window_size(size, persist=persist)
+            print(f"[DynamicToolManager] lru 窗口大小 = {applied}"
+                  f"{'（不裁剪）' if applied <= 0 else ''}")
+            return applied
+
+        applied = size
+        if persist:
+            try:
+                from core.common.settings import settings
+                settings.set(LRUStrategy.SETTING_KEY, applied)
+            except Exception as e:
+                print(f"[DynamicToolManager] lru 窗口设置持久化失败: {e}")
+        print(f"[DynamicToolManager] 当前策略 {self.strategy_name} 非 lru，"
+              f"窗口大小 {applied} 仅已保存（切回 lru 后生效）")
+        return applied
+
+    def get_window_stats(self) -> dict:
+        """当前策略最近一次构建的窗口统计（非 lru 策略返回空 dict）。"""
+        return dict(getattr(self.get_strategy(), "last_window_stats", None) or {})
+
+    @property
+    def strategy_name(self) -> str:
+        """当前策略标签（带参数的策略会带上配置，如 lru@20）。"""
+        strategy = self.get_strategy()
+        return (getattr(strategy, "label", None)
+                or getattr(strategy, "name", "lru") or "lru")
 
     def set_main_window(self, main_window):
         """设置 MainWindow 引用"""
@@ -253,6 +335,26 @@ class DynamicToolManager:
     # 上下文感知过滤
     # ------------------------------------------------------------------
 
+    def get_keyword_domains(self, user_input: str) -> list:
+        """仅由 user_input 关键词命中的分类（get_active_domains 的来源 1）。
+
+        lru 窗口策略把它当作「保底分层」依据：指令明确提到的能力绝不因窗口被裁掉。
+        """
+        hit = []
+        if not user_input:
+            return hit
+        user_lower = user_input.lower()
+        for domain, keywords in _DOMAIN_KEYWORDS.items():
+            for kw in keywords:
+                if kw.lower() in user_lower:
+                    hit.append(domain)
+                    break
+        return hit
+
+    def get_interface_domains(self, current_interface: str) -> list:
+        """当前界面的默认分类（get_active_domains 的来源 2）。"""
+        return list(INTERFACE_CATEGORIES.get(current_interface or "", []))
+
     def get_active_domains(self, user_input: str, current_interface: str,
                            recent_categories: list) -> list:
         """
@@ -281,18 +383,12 @@ class DynamicToolManager:
                 active.append(cat)
 
         # 1. 关键词匹配
-        if user_input:
-            user_lower = user_input.lower()
-            for domain, keywords in _DOMAIN_KEYWORDS.items():
-                for kw in keywords:
-                    if kw.lower() in user_lower:
-                        _add_category(domain)
-                        break
+        for cat in self.get_keyword_domains(user_input):
+            _add_category(cat)
 
         # 2. 当前界面的默认分类
-        if current_interface and current_interface in INTERFACE_CATEGORIES:
-            for cat in INTERFACE_CATEGORIES[current_interface]:
-                _add_category(cat)
+        for cat in self.get_interface_domains(current_interface):
+            _add_category(cat)
 
         # 3. 最近使用的分类
         if recent_categories:
@@ -313,104 +409,34 @@ class DynamicToolManager:
                               user_input: str = "",
                               current_interface: str = "",
                               recent_categories: Optional[list] = None) -> List[Tool]:
+        """生成上下文感知的工具列表（lru 现状行为）。
+
+        完整调度逻辑已迁移至 LRUStrategy.build_tools；本方法作为旧入口保留，
+        等价于「切到 lru 策略」的默认行为，避免两处逻辑漂移。
         """
-        生成上下文感知的工具列表。
-
-        只收集 active_categories 中的 action（按当前界面/关键词/最近分类过滤），
-        并附加显式激活的工具（LRU 队列）。最后合并 core_tools。
-
-        Args:
-            core_tools: CoreCoder 基础工具列表（read_file, write_file 等）
-            user_input: 用户输入文本，用于关键词匹配
-            current_interface: 当前界面 objectName；为空时自动获取
-            recent_categories: 最近使用的工具分类列表
-
-        Returns:
-            合并后的 tool 列表
-        """
-        from core.agent.tools.action_tool import ActionTool
-        from core.common.action_registry import ActionRegistry
-
-        registry = ActionRegistry.instance()
-
-        # 1. 获取活跃分类
-        if not current_interface:
-            current_interface = self.get_current_interface()
-        active_domains = self.get_active_domains(
-            user_input, current_interface, recent_categories or []
+        return self.build_tools_for_context(
+            core_tools=core_tools,
+            user_input=user_input,
+            current_interface=current_interface,
+            recent_categories=recent_categories or [],
         )
 
-        # 2. 收集 active_categories 中的 action
-        all_metas = registry.list_actions()
-        matched_metas = [
-            m for m in all_metas
-            if m.category in active_domains and m.scope == "agent"
-        ]
+    def build_tools_for_context(self, core_tools: Optional[List[Tool]] = None,
+                                user_input: str = "",
+                                current_interface: str = "",
+                                recent_categories: Optional[list] = None) -> List[Tool]:
+        """按当前工具调度策略生成暴露给 Agent 的工具列表。
 
-        # 3. 为每个 action 生成 ActionTool
-        action_tools = []
-        seen_names = set()
-        for meta in matched_metas:
-            # 获取完整 action name（带前缀）
-            full_name = self._find_full_name(registry, meta.name)
-            if not full_name:
-                continue
-
-            # 生成 display_name（去掉前缀，如 "annotation.next_image" → "next_image"）
-            display_name = meta.name
-            if "." in full_name:
-                display_name = full_name.split(".", 1)[1]
-
-            # 避免重复（如 drawing_widget 和 annotation_interface 都有 toggle_enhance）
-            if display_name in seen_names:
-                continue
-            seen_names.add(display_name)
-
-            # 构建参数 schema
-            params_schema = self._build_params_schema(meta, registry)
-
-            tool = ActionTool(
-                action_name=full_name,
-                display_name=display_name,
-                description=meta.description,
-                parameters_schema=params_schema,
-            )
-            action_tools.append(tool)
-
-        # 4. 附加显式激活的工具（LRU 队列中，即使其分类不在 active_domains 中）
-        activated_names = self.get_activated_tool_names()
-        for act_name in activated_names:
-            meta = registry.get_meta(act_name)
-            if not meta:
-                continue
-            # 仅暴露 scope="agent" 的工具给 Agent
-            if getattr(meta, "scope", None) != "agent":
-                continue
-
-            display_name = act_name.split(".", 1)[1] if "." in act_name else act_name
-            if display_name in seen_names:
-                continue
-            seen_names.add(display_name)
-
-            params_schema = self._build_params_schema(meta, registry)
-            tool = ActionTool(
-                action_name=act_name,
-                display_name=display_name,
-                description=meta.description,
-                parameters_schema=params_schema,
-            )
-            action_tools.append(tool)
-
-        # 5. 合并 CoreCoder 基础工具 + 动态 action tools
-        result = list(core_tools or [])
-        result.extend(action_tools)
-
-        print(f"[DynamicToolManager] ",
-              f"active_domains={active_domains}, "
-              f"activated={len(activated_names)}, "
-              f"actions={len(action_tools)}, total_tools={len(result)}")
-
-        return result
+        面向策略接口分发：delegate 到 self._strategy.build_tools(...)。
+        默认策略为 lru（= get_tools_for_context 现状行为）。
+        """
+        strategy = self.get_strategy()
+        return strategy.build_tools(
+            core_tools=core_tools,
+            user_input=user_input,
+            current_interface=current_interface,
+            recent_categories=recent_categories or [],
+        )
 
     def get_all_ai_action_tools(self) -> list:
         """返回所有 scope="agent" 的 ActionTool 列表（不经过分类过滤）。

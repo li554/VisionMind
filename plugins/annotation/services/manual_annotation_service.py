@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import time
 import cv2
 import numpy as np
 from PySide6.QtGui import QColor
@@ -21,14 +22,45 @@ from core.backend.formats import load_annotations, save_annotations, update_cate
 from core.backend.utils import calculate_iou
 from core.common.action_registry import action
 from core.common.image_utils import imread_unicode
-from core.common.project_settings import project_settings
+from core.common.project_settings import (project_settings, RULES_SCHEMA_VERSION,
+                                          migrate_legacy_rules)
 from core.common.settings import settings
 from core.event_bus import StateType
+from core.common.atomic_io import atomic_open
+from .annotation_writer import AnnotationWriter
 from .foreground_check import (
     SMALL_BOX_THRESHOLD, traditional_mask, fit_metrics, boundary_gradient,
     mask_to_polygon, mask_to_bbox,
 )
 from .project_context import ProjectContext
+from ..session import ImageSession
+
+
+def _remove_with_retry(path, attempts=4, delay_s=0.03):
+    """删除文件，遇 Windows 句柄占用时做**有界**短暂重试。
+
+    Windows 上 `os.remove` 在文件仍被其它句柄占用时抛
+    `PermissionError: [WinError 32] 另一个程序正在使用此文件`。本应用的图像解码
+    （QImageReader 按路径打开文件）在解码期间会短暂持有句柄，而"打开目录"会为
+    所有可见行一次性排入缩略图任务 —— 于是"刚打开目录就删图"原本必定失败
+    （已用 scripts/_probe_delete_lock.py 实测：此刻缩略图池活跃 3、解码池活跃 1，
+    删除失败；约 200ms 后成功）。
+
+    重试上限刻意很小（默认 4 次 × 30ms ≈ 90ms），避免在 GUI 线程上制造可见卡顿；
+    真正的长时间占用由调用方在删除前 `wait_idle()` 解决（见 interface.delete_image_file）。
+    """
+    last = None
+    for i in range(max(1, attempts)):
+        try:
+            os.remove(path)
+            return
+        except PermissionError as e:      # 只对句柄占用重试
+            last = e
+            if i + 1 < attempts:
+                time.sleep(delay_s)
+        except FileNotFoundError:
+            return                        # 已经不在了，视为成功
+    raise last
 
 
 class ManualAnnotationService:
@@ -41,9 +73,18 @@ class ManualAnnotationService:
         self._event_bus = None  # 事件总线，由 AnnotationPlugin.on_load 注入
 
         # ====== 状态变量: 文件导航 ======
-        # 当前加载的图片文件列表、当前图片路径、当前目录
+        # 「当前图片 + 该图标注 + 已提交像素与度量」的唯一所有者。原先 service /
+        # interface / widget 各存一份 current_image_path，再叠加 current_annotations
+        # 的别名，使 "(图 N-1 的度量) + (图 N 的标注)" 这类不自洽状态可以在三处之间
+        # 出现，并被任何一次自动保存写进磁盘（审计 W2）。现在真值只在 session 里。
+        # 注意：service 是普通 Python 对象，不能当 QObject 的 parent。
+        # session 由 self.session 强引用保活。
+        self.session = ImageSession()
+        # 标注写入的唯一出口：串行 + 同路径最新优先 + 可等待（"IO 全在后台"的最后一块）。
+        # 生命周期由本 service 显式管理（drain() 排空并停止写入线程）。
+        self._writer = AnnotationWriter()
+        # 当前加载的图片文件列表、当前目录
         self.image_files = []
-        self.current_image_path = None
         self.current_dir = None
         self.current_dir_hash = ""
 
@@ -68,22 +109,21 @@ class ManualAnnotationService:
         self.file_visibility = []
 
         # ====== 状态变量: 标注可见性 ======
-        # 隐藏的标注索引集合（当前图片）。由 scope="agent" visibility action 操作，
-        # hidden_indices 由 visibility action 维护，界面经 annotation:annotations_changed 信号刷新；切图时清空。数据权威源在 service。
-        self.hidden_indices = set()
-        # 当前图片标注列表引用（与 draw_area.annotations 同源），供 visibility action 做索引校验
-        self.current_annotations = []
+        # 隐藏的标注索引集合（当前图片）。**权威源已并入 session**（审计收尾），
+        # 这里保留同名 property 以便既有调用点继续工作，不再各存一份。
+        # hidden_indices 由 visibility action 维护，界面经
+        # annotation:annotations_changed 信号刷新；切图时由 session.begin_load 清空。
 
         # ====== 状态变量: 撤销/重做 ======
-        self._undo_stack = []
-        self._redo_stack = []
+        # 撤销/重做栈同样并入 session（见下），_max_undo_steps 是策略不是状态，
+        # 留在 service。
         self._max_undo_steps = 50
         self._is_undo_redo = False
 
         # ====== 状态变量: 副标注 & 参考标注 & 编辑器状态 ======
+        # 副标注（secondary_*）是**按图作用域**的，权威源也已并入 session；
+        # 目录/来源等"配置类"状态仍留在 service。
         self.reference_annotation = None
-        self.secondary_annotations = []
-        self.secondary_annotation_map = {}
         self.secondary_loaded = False
         self.secondary_dir = None
         self._last_sam_annotation = None
@@ -170,7 +210,17 @@ class ManualAnnotationService:
                     save_annotations(save_data, saved_path,
                                    format_type=fmt, **save_kwargs)
                 else:
-                    saved_path = os.path.join(output_dir, f"{base_name}.json")
+                    # 兜底分支必须按**格式自身的约定**决定落盘路径与扩展名
+                    # （审计 D35）：原先硬编码 `<base>.json`，而 MaskFormat.save 写的是
+                    # 图像（扩展名直接取自 output_path 交给 OpenCV），于是
+                    # `imwrite_unicode(<...>.json.atomic-.., ext='.json')` 必然失败：
+                    #   OpenCV: could not find encoder for the specified extension
+                    # 也就是非项目模式下 mask/sa1b 保存 100% 失败（异常还被本函数的
+                    # except 吞成 {"status":"error"}）。
+                    target_dir, filename = self._resolve_annotation_output(
+                        fmt, output_dir, base_name)
+                    os.makedirs(target_dir, exist_ok=True)
+                    saved_path = os.path.join(target_dir, filename)
                     save_annotations(save_data, saved_path, format_type=fmt, **save_kwargs)
             saved_summary = [{"label": i.get("label"), "bbox": i.get("bbox")} for i in instances]
             return {"status": "success", "output_path": output_dir, "file_path": saved_path,
@@ -180,23 +230,84 @@ class ManualAnnotationService:
                 raise
             return {"status": "error", "message": str(e)}
 
+    @staticmethod
+    def _resolve_annotation_output(fmt, output_dir, base_name):
+        """按格式自身的约定解析 (目标目录, 文件名) —— 审计 D35。
+
+        每个格式"写什么文件、放哪个子目录"是与它自己的加载实现绑定的事实，因此
+        这里从格式类读取，而不是在调用点猜：
+
+          * `MaskFormat.EXTENSIONS = ['.png', ...]` 且约定放在 `masks/` 子目录
+            （见 `MaskFormat.scan_categories` 的 `mask_subdirs = ['masks']`）——
+            若把掩码写成 `<base>.json`，OpenCV 会因找不到编码器直接失败；
+            若写成 `<dir>/<base>.png`，还会与**源图同名同目录**而覆盖别人的图。
+          * `SA1BFormat.EXTENSIONS = ['.json']`，按 base 命名。
+          * 其余（labelme/voc/未知）沿用 `<base>.json`。
+
+        返回 (dir, filename)。
+        """
+        fmt_key = (fmt or "").lower()
+        if fmt_key == "mask":
+            try:
+                from core.backend.formats.mask_format import MaskFormat
+                ext = MaskFormat.EXTENSIONS[0]
+            except Exception:
+                ext = ".png"
+            return os.path.join(output_dir, "masks"), f"{base_name}{ext}"
+        if fmt_key == "sa1b":
+            try:
+                from core.backend.formats.sa1b_format import SA1BFormat
+                ext = SA1BFormat.EXTENSIONS[0]
+            except Exception:
+                ext = ".json"
+            return output_dir, f"{base_name}{ext}"
+        # 项目内配置优先（与 load_image_annotations 用的是同一份约定）
+        cfg = (settings.get("annotation_formats", {}) or {}).get(fmt_key) or {}
+        ext = cfg.get("ext", ".json")
+        filename = cfg.get("filename") or f"{base_name}{ext}"
+        subdir = cfg.get("subdir", "") or ""
+        return (os.path.join(output_dir, subdir) if subdir else output_dir), filename
+
+    @staticmethod
+    def _annotation_output_candidates(fmt, output_dir, base_name):
+        """返回该格式**可能**的落盘路径候选（读取端按顺序探测）。
+
+        与 `_resolve_annotation_output` 共用同一份约定，并额外覆盖"旧版本/项目配置"
+        可能留下的路径，保证写入与读取不会漂移（审计 D35：写完读不回来同样是缺陷）。
+        """
+        primary_dir, primary_name = ManualAnnotationService._resolve_annotation_output(
+            fmt, output_dir, base_name)
+        candidates = [os.path.join(primary_dir, primary_name)]
+        fmt_key = (fmt or "").lower()
+        if fmt_key == "mask":
+            # 兼容：旧版本把掩码直接放在目录根、以及把掩码误写成 .json 的历史情况
+            for ext in ("",):
+                candidates.append(os.path.join(output_dir, f"{base_name}{ext or '.png'}"))
+        if fmt_key == "coco":
+            cfg = (settings.get("annotation_formats", {}) or {}).get("coco") or {}
+            candidates.append(os.path.join(
+                output_dir, cfg.get("filename", "_annotations.coco.json")))
+        return candidates
+
     def load_image_annotations(self, image_path, output_dir=None, fmt="mask"):
         """加载图片标注数据"""
         try:
             if not output_dir:
                 output_dir = settings.get("output_dir", "")
             base_name = os.path.splitext(os.path.basename(image_path))[0]
-            fmt_config = settings.get("annotation_formats", {})
             formats_to_try = ["labelme", "coco", "yolo", "voc", "mask"] if fmt == "all" else [fmt]
             for try_fmt in formats_to_try:
-                config = fmt_config.get(try_fmt)
-                if not config:
-                    continue
-                file_path = os.path.join(output_dir, config.get("subdir", ""),
-                                         config.get("filename", f"{base_name}{config['ext']}"))
-                if not os.path.exists(file_path):
-                    file_path = os.path.join(output_dir, config.get("filename", f"{base_name}{config['ext']}"))
-                if not os.path.exists(file_path):
+                # 与写入端共用同一个路径解析（审计 D35）：原先这里依赖
+                # `settings["annotation_formats"]`，而该配置默认为空 -> mask 等格式被
+                # 直接 `continue` 跳过，于是"写进去了却永远读不回来"。写入端已改为按
+                # 格式类自身的约定解析，读取端必须用同一份约定，否则两边会再次漂移。
+                candidates = self._annotation_output_candidates(try_fmt, output_dir, base_name)
+                file_path = None
+                for candidate in candidates:
+                    if os.path.exists(candidate):
+                        file_path = candidate
+                        break
+                if not file_path:
                     continue
                 load_kwargs = {"image_path": image_path} if try_fmt in ("coco", "yolo", "yoloseg", "yoloobb") else {}
                 result = load_annotations(file_path, **load_kwargs)
@@ -289,26 +400,66 @@ class ManualAnnotationService:
         return result
 
     def delete_image(self, image_path):
-        result = {"success": True, "deleted_files": [], "errors": []}
+        """物理删除图片及其**专属**标注与缓存。
+
+        修复的两处缺陷（审计 D1）：
+        1. 原先的 `from core.backend.formats import find_label_file` 必定 ImportError
+           （该符号只从 `core.backend.utils` 导出），而它在 `os.remove(image_path)`
+           **之后** -> 图片已被删除、标注留在原地、调用方还拿到 success=False
+           （于是 `delete_image_file` 直接 return error，列表里残留失效条目）。
+        2. `find_label_file` 可能返回**共享**标注文件（如 `_annotations.coco.json`
+           或共享掩码），直接 `os.remove` 会连带毁掉整个数据集里其它图片的标注。
+
+        因此改为两阶段：先**只解析**待删清单（任一环节失败则一个文件都不删），
+        再逐个删除并逐个记录；共享文件只报告、不删除。
+        """
+        result = {"success": True, "deleted_files": [], "errors": [], "warnings": []}
         if not os.path.exists(image_path):
-            return {"success": False, "deleted_files": [], "errors": ["文件不存在: " + image_path]}
+            return {"success": False, "deleted_files": [], "warnings": [],
+                    "errors": ["文件不存在: " + image_path]}
+
+        # ---- 阶段一：解析（不产生任何副作用）----
+        targets = [image_path]
         try:
-            os.remove(image_path)
-            result["deleted_files"].append(image_path)
-            from core.backend.formats import find_label_file
+            stem = os.path.splitext(os.path.basename(image_path))[0]
+            from core.backend.utils import find_label_file
             ann_path = find_label_file(image_path)
             if ann_path and os.path.exists(ann_path):
-                os.remove(ann_path)
-                result["deleted_files"].append(ann_path)
+                if os.path.splitext(os.path.basename(ann_path))[0] == stem:
+                    targets.append(ann_path)
+                else:
+                    result["warnings"].append(
+                        "标注位于共享文件，已保留未删除（需按格式移除该图条目）: " + ann_path)
             base = os.path.splitext(image_path)[0]
             for ext in ['.npy', '.png', '.jpg', '.json']:
                 cache_path = f"{base}_cache{ext}"
                 if os.path.exists(cache_path):
-                    os.remove(cache_path)
-                    result["deleted_files"].append(cache_path)
+                    targets.append(cache_path)
+        except Exception as e:
+            # 解析失败 -> 一个文件都不删，保证磁盘状态与调用方认知一致
+            return {"success": False, "deleted_files": [], "warnings": [],
+                    "errors": ["解析关联文件失败，未删除任何文件: " + str(e)]}
+
+        # ---- 阶段二：先删图片本身 ----
+        # 顺序很重要：图片是主对象。若它删不掉（Windows 上解码进行中会
+        # WinError 32），就**不能**继续删标注/缓存 —— 否则会留下
+        # "标注已删、图片还在"的反向孤儿状态（这是本测试实测到的情形）。
+        try:
+            _remove_with_retry(image_path)
+            result["deleted_files"].append(image_path)
         except Exception as e:
             result["success"] = False
-            result["errors"].append(str(e))
+            result["errors"].append(f"{image_path}: {e}")
+            return result
+
+        # ---- 阶段三：清理已解析出的关联文件（失败只记录，不回滚图片）----
+        for target in targets[1:]:
+            try:
+                _remove_with_retry(target)
+                result["deleted_files"].append(target)
+            except Exception as e:
+                result["success"] = False
+                result["errors"].append(f"{target}: {e}")
         return result
 
     def scan_image_files(self, dir_path):
@@ -353,14 +504,73 @@ class ManualAnnotationService:
     #   set_current_image_with_split / clear_all / get_cached_annotations /
     #   search_images / navigate_relative
 
+    # ====== 状态所有权：只读投影（真值在 self.session）======
+    # 这两个 property **没有 setter**：任何 `self.current_image_path = ...` /
+    # `self.current_annotations = ...` 都会立刻 AttributeError，而不是悄悄留下
+    # 第二份真值。改写必须走 session.begin_load() / session.set_annotations()。
+
+    @property
+    def current_image_path(self):
+        return self.session.path
+
+    @property
+    def current_annotations(self):
+        return self.session.annotations
+
+    # ---- 以下四项原先各有一份 service 侧副本，现统一委托给 session ----
+    # 保留 property 是为了让既有调用点（约 40 处）无需改动，同时**消灭第二份真值**：
+    # 任何 `self.hidden_indices = ...` / `self.secondary_annotations = ...` 都会写进
+    # session，而不是在 service 上另建一个副本（那正是"两份状态不同步"的来源）。
+    # 读 `self._undo_stack` 的地方一律经 undo_stack 属性，见下方说明。
+
+    @property
+    def hidden_indices(self):
+        return self.session.hidden_indices
+
+    @hidden_indices.setter
+    def hidden_indices(self, value):
+        self.session.hidden_indices = value
+
+    @property
+    def secondary_annotations(self):
+        return self.session.secondary_annotations
+
+    @secondary_annotations.setter
+    def secondary_annotations(self, value):
+        self.session.secondary_annotations = value
+
+    @property
+    def secondary_annotation_map(self):
+        return self.session.secondary_annotation_map
+
+    @secondary_annotation_map.setter
+    def secondary_annotation_map(self, value):
+        self.session.secondary_annotation_map = value
+
+    @property
+    def _undo_stack(self):
+        return self.session.undo_stack
+
+    @_undo_stack.setter
+    def _undo_stack(self, value):
+        self.session._undo_stack = list(value or ())
+
+    @property
+    def _redo_stack(self):
+        return self.session.redo_stack
+
+    @_redo_stack.setter
+    def _redo_stack(self, value):
+        self.session._redo_stack = list(value or ())
+
     def set_image_files(self, files):
         """设置当前图片文件列表"""
         self.image_files = files
         self.file_visibility = []
 
     def set_current_image(self, path):
-        """设置当前图片路径"""
-        self.current_image_path = path
+        """设置当前图片路径：走 session 的唯一入口（换代次 + 清空已提交像素）。"""
+        self.session.begin_load(path)
 
     def set_image_split(self, image_path, split):
         """记录图片的数据集划分（train/val/test）"""
@@ -385,7 +595,7 @@ class ManualAnnotationService:
     def set_filter(self, mode="category", category=None, index=0,
                    min_size=0, max_size=0,
                    min_width=0, max_width=0, min_height=0, max_height=0,
-                   annotated=None):
+                   annotated=None, split=None):
         """统一筛选入口 — 按 mode 分发到不同的筛选逻辑。
 
         不同 mode 对应不同的筛选应用函数（lambda 输入统一为无参闭包，
@@ -495,7 +705,7 @@ class ManualAnnotationService:
     def clear(self):
         """清空导航状态（图片文件、当前图片、目录、划分、缓存）"""
         self.image_files = []
-        self.current_image_path = None
+        self.session.clear()
         self.current_dir = None
         self.current_dir_hash = ""
         self.image_splits = {}
@@ -519,14 +729,18 @@ class ManualAnnotationService:
         self.annotation_cache.clear()
         files = self.scan_image_files(dir_path)
         self.set_image_files(files)
-        last_idx = settings.get(f"last_idx_{self.current_dir_hash}", 0)
-        settings.set("last_opened_dir", dir_path)
+        last_idx = settings.get_session(f"last_idx_{self.current_dir_hash}", 0)
+        settings.set_session("last_opened_dir", dir_path)
         return files, last_idx
 
     def save_last_index(self, index):
-        """保存当前目录最近查看的图片索引。"""
+        """保存当前目录最近查看的图片索引。
+
+        用 `set_session`：这是**运行时状态**，写进受版本控制的 `core/core.json` 会让
+        每次切图都落一次盘、并让该文件永久 dirty（审计 D30）。
+        """
         if self.current_dir:
-            settings.set(f"last_idx_{self.current_dir_hash}", index)
+            settings.set_session(f"last_idx_{self.current_dir_hash}", index)
 
     def load_annotations_for_image(self, image_path, mode, strict=False,
                                    output_dir="", is_non_project_mode=False,
@@ -664,17 +878,56 @@ class ManualAnnotationService:
                         "- 刷新类操作已自动应用筛选结果到文件列表，无需手动调用本方法验证筛选生效\n"
                         "- 仅做名称过滤时，可先调用 manual.clear_filters 清除标注筛选",
             category="标注", params={"keyword": "str"}, scope="agent")
-    def search_images(self, keyword, output_dir="", is_non_project_mode=False, non_project_format=None):
+    def search_snapshot(self):
+        """取一份搜索所需状态的**快照**（在 GUI 线程调用），供后台扫描使用。
+
+        后台扫描必须基于快照：否则工作线程在迭代 `image_files` / 读取 `filter_*` /
+        `image_splits` 时会被 GUI 线程的修改撕裂（列表被整体替换、筛选条件改到一半），
+        得到自相矛盾的可见性结果。
+        """
+        return {
+            "image_files": list(self.image_files),
+            "image_splits": dict(self.image_splits),
+            "filters": {
+                "category": self.filter_category,
+                "size_range": self.filter_size_range,
+                "width_range": self.filter_width_range,
+                "height_range": self.filter_height_range,
+                "annotated": self.filter_annotated,
+                "split": self.filter_split,
+            },
+        }
+
+    def search_images(self, keyword, output_dir="", is_non_project_mode=False,
+                      non_project_format=None, snapshot=None, apply_state=True):
         """计算文件列表中每个文件的可见性（搜索 + 标注筛选）。
 
         返回 dict：{"summary": {"total", "visible", "hidden"}, "files": [[file_path, hidden], ...]}。
+
+        `snapshot` 非空时一律使用快照里的状态（供**后台**扫描）；`apply_state=False`
+        时不回写 `self.file_visibility`（由调用方在 GUI 线程统一回写）。
         """
+        snap = snapshot or {}
+        files = snap.get("image_files")
+        if files is None:
+            files = self.image_files
+        splits = snap.get("image_splits")
+        if splits is None:
+            splits = self.image_splits
+        _f = snap.get("filters") or {}
+        filter_category = _f.get("category", self.filter_category)
+        filter_size_range = _f.get("size_range", self.filter_size_range)
+        filter_width_range = _f.get("width_range", self.filter_width_range)
+        filter_height_range = _f.get("height_range", self.filter_height_range)
+        filter_annotated = _f.get("annotated", self.filter_annotated)
+        filter_split = _f.get("split", self.filter_split)
+
         results = []
         search_text_lower = (keyword or "").lower()
-        has_filter = bool(self.filter_category or self.filter_size_range or
-                          self.filter_width_range or self.filter_height_range or
-                          self.filter_annotated is not None or self.filter_split is not None)
-        for file_path in self.image_files:
+        has_filter = bool(filter_category or filter_size_range or
+                          filter_width_range or filter_height_range or
+                          filter_annotated is not None or filter_split is not None)
+        for file_path in files:
             if not isinstance(file_path, str):
                 continue
             filename = os.path.basename(file_path).lower()
@@ -691,43 +944,43 @@ class ManualAnnotationService:
                 )
                 num_anns = len(annotations)
                 # 数据集划分筛选 gate：train/val/test 精确匹配；"" 表示显示「未划分」图片
-                if self.filter_split is not None:
-                    actual_split = self.image_splits.get(os.path.normpath(file_path), "")
-                    if self.filter_split == "":
+                if filter_split is not None:
+                    actual_split = splits.get(os.path.normpath(file_path), "")
+                    if filter_split == "":
                         split_ok = not actual_split
                     else:
-                        split_ok = (actual_split == self.filter_split)
+                        split_ok = (actual_split == filter_split)
                 else:
                     split_ok = True
                 matched = False
                 # 标注状态筛选优先：只判断是否有标注，再叠加类别/尺寸条件
-                if self.filter_annotated is not None:
-                    annotated_ok = (num_anns > 0) if self.filter_annotated else (num_anns == 0)
+                if filter_annotated is not None:
+                    annotated_ok = (num_anns > 0) if filter_annotated else (num_anns == 0)
                     if not annotated_ok:
                         matched = False
-                    elif self.filter_category or self.filter_size_range or \
-                            self.filter_width_range or self.filter_height_range:
+                    elif filter_category or filter_size_range or \
+                            filter_width_range or filter_height_range:
                         matched = any(
                             self._check_annotation_match(
                                 ann,
-                                filter_category=self.filter_category,
-                                filter_size_range=self.filter_size_range,
-                                filter_width_range=self.filter_width_range,
-                                filter_height_range=self.filter_height_range
+                                filter_category=filter_category,
+                                filter_size_range=filter_size_range,
+                                filter_width_range=filter_width_range,
+                                filter_height_range=filter_height_range
                             )
                             for ann in annotations
                         )
                     else:
                         matched = True
-                elif self.filter_category or self.filter_size_range or \
-                        self.filter_width_range or self.filter_height_range:
+                elif filter_category or filter_size_range or \
+                        filter_width_range or filter_height_range:
                     matched = any(
                         self._check_annotation_match(
                             ann,
-                            filter_category=self.filter_category,
-                            filter_size_range=self.filter_size_range,
-                            filter_width_range=self.filter_width_range,
-                            filter_height_range=self.filter_height_range
+                            filter_category=filter_category,
+                            filter_size_range=filter_size_range,
+                            filter_width_range=filter_width_range,
+                            filter_height_range=filter_height_range
                         )
                         for ann in annotations
                     )
@@ -735,13 +988,40 @@ class ManualAnnotationService:
                     matched = True
                 annotation_match = split_ok and matched
             results.append((file_path, not (text_match and annotation_match)))
-        self.file_visibility = results
+        if apply_state:
+            self.file_visibility = results
         total = len(results)
         visible = sum(1 for _, hidden in results if not hidden)
         return {
             "summary": {"total": total, "visible": visible, "hidden": total - visible},
             "files": results,
         }
+
+    def visible_image_indices(self):
+        """当前筛选结果下**可见**的图片下标集合（导航的唯一真值来源）。
+
+        数据来自 `file_visibility`（界面在应用筛选/搜索后回写的计算结果）。
+        没有筛选时等价于"全部可见"。
+
+        审计阶段 3e：原先 service 侧的 `_navigate_ai` 硬编码
+        `set(range(len(image_files)))`，即假设"没有筛选"，于是 agent 的
+        `next_image` 会跳到被筛选隐藏的图片上，而界面按方向键会正确跳过 ——
+        同一个动作、两条真值。现在两端都从这里取。
+        """
+        total = len(self.image_files)
+        if not self.file_visibility:
+            return set(range(total))
+        visible = set()
+        for i, item in enumerate(self.file_visibility):
+            if i >= total:
+                break
+            try:
+                _path, hidden = item
+            except (TypeError, ValueError):
+                continue
+            if not hidden:
+                visible.add(i)
+        return visible if visible else set(range(total))
 
     def navigate_relative(self, current_idx, direction, visible_indices):
         """在可见图片列表中查找上一张(-1)或下一张(+1)。
@@ -819,7 +1099,7 @@ class ManualAnnotationService:
         merged = dict(config or {})
         merged["categories"] = self._categories_to_serializable(categories)
         try:
-            with open(config_path, 'w', encoding='utf-8') as f:
+            with atomic_open(config_path, 'w', encoding='utf-8') as f:
                 json.dump(merged, f, ensure_ascii=False, indent=4)
         except Exception as e:
             print(f"[AnnotationService] 保存类别到 JSON 失败: {e}")
@@ -1053,9 +1333,36 @@ class ManualAnnotationService:
         self.context.output_dir = project_info.get("path", self.context.output_dir)
         # 规则以 project_info 持久化配置为准；无 rules/为空时不静默注入默认规则，
         # 与 setup_project 保持一致（预测只用配置里的规则，空则走各环节统一兜底）
-        new_rules = project_info.get("rules")
-        if new_rules:
-            self.context.current_project_rules = new_rules
+        self.load_rules_from_project(project_info, keep_when_empty=True)
+
+    def load_rules_from_project(self, project_info, keep_when_empty=False):
+        """从项目信息装载规则，并把旧版（相对语义）规则一次性迁移到绝对语义版本。
+
+        迁移仅在确有旧字段时写回 project_info.json（rules + rules_schema），
+        保证文件、内存缓存、规则配置对话框、预测四处一致。
+        """
+        raw_rules = project_info.get('rules') or {}
+        if not raw_rules and keep_when_empty:
+            return self.context.current_project_rules
+
+        rules, migrated = migrate_legacy_rules(raw_rules, project_info.get('rules_schema'))
+        self.context.current_project_rules = rules
+        if migrated:
+            project_name = project_info.get('name')
+            print(f"[AnnotationService] 项目 '{project_name}' 的旧版相对规则已迁移为绝对规则: {rules}")
+            self._persist_rules_migration(project_name, rules)
+        return rules
+
+    def _persist_rules_migration(self, project_name, rules):
+        """把迁移后的规则写回项目配置（update_project_rules 会一并写入
+        rules_schema，并同步内存缓存）。"""
+        ps = self.project_service
+        if not project_name or ps is None:
+            return
+        try:
+            ps.update_project_rules(project_name, rules)
+        except Exception as e:
+            print(f"[AnnotationService] 规则迁移写回失败: {e}")
 
     def _category_color(self, name):
         """根据类别名分配固定颜色（与 interfaces.get_category_color 同规则）。"""
@@ -1086,7 +1393,8 @@ class ManualAnnotationService:
         # 规则以项目已持久化的配置为准：无 rules 时保持空 dict，不静默注入
         # 默认规则。规则配置对话框（RuleConfigDialog）显示什么，预测就用什么；
         # 空规则下各环节兜底默认统一为 mode='reuse'（与对话框/项目创建种子一致）。
-        self.context.current_project_rules = project_info.get('rules') or {}
+        # 旧项目（相对规则版本）在此一次性迁移为绝对规则。
+        self.load_rules_from_project(project_info)
 
         # 任务类型统一为内部短名 det/seg/obb（兼容旧项目长名 detection/segmentation）
         from core.service.project_service import normalize_task_type
@@ -1166,13 +1474,21 @@ class ManualAnnotationService:
         return project_info
 
     def enter_non_project_mode(self, dir_path):
-        """进入非项目模式并扫描目录。返回 scan_result dict。"""
+        """进入非项目模式并扫描目录。返回 scan_result dict。
+
+        `_non_project_save_dir` 记录"**当前**非项目目录的保存位置"，每次进入都必须
+        无条件指向本次目录。原先写成 `if not self.context._non_project_save_dir:`
+        （第一次进入才设置），于是**先开目录 A、再开目录 B** 时 `output_dir` 仍是 A，
+        B 的标注会被写进 A 里（同名 basename 直接覆盖）—— 审计 D4。
+
+        "上次打开过哪个目录"是另一回事，由 `last_opened_dir` 这类设置项承担，
+        不复用这个字段。
+        """
         self.context._is_non_project_mode = True
         self.context._non_project_format = None
         self.current_dir = dir_path
-        if not self.context._non_project_save_dir:
-            self.context._non_project_save_dir = dir_path
-            self.context.output_dir = dir_path
+        self.context._non_project_save_dir = dir_path      # 无条件更新（D4）
+        self.context.output_dir = dir_path
         self.context.categories = {}
         self.set_current_category(None)
         self.context.project_has_own_categories = False
@@ -1556,13 +1872,25 @@ class ManualAnnotationService:
     # 原 EditorVM: save_undo_state / undo / redo / clear_undo_history / has_undo / has_redo
     # （与 annotation_io 旧版 _undo_stack_impl/_redo_stack_impl 合并去重，保留本实现）
 
-    def save_undo_state(self, annotations, image_path):
-        """保存当前标注快照到撤销栈。"""
+    def save_undo_state(self, annotations, image_path, hidden_indices=None):
+        """保存当前标注快照到撤销栈。
+
+        **可见性必须与标注同帧保存**（审计 D21）：`hidden_indices` 是按下标寻址的
+        集合，删除/清空标注会让下标位移或失效。只快照标注、不快照可见性，撤销后就会
+        出现"标注列表回来了、但可见性停留在删除后的状态"的不自洽组合 —— 例如
+        `clear_annotations` 先把集合清空，撤销后所有标注仍然全部可见（原来的隐藏
+        状态永久丢失）。
+
+        `hidden_indices=None` 时取 service 当前值（copy 一份，避免后续原地修改
+        污染已入栈的帧）。
+        """
         if self._is_undo_redo:
             return
+        source = self.hidden_indices if hidden_indices is None else hidden_indices
         state = {
             'annotations': copy.deepcopy(annotations),
-            'image_path': image_path
+            'image_path': image_path,
+            'hidden_indices': set(source or ()),
         }
         self._undo_stack.append(state)
         if len(self._undo_stack) > self._max_undo_steps:
@@ -1578,22 +1906,64 @@ class ManualAnnotationService:
             return self.redo(annotations, image_path)
         return self.undo(annotations, image_path)
 
+    @staticmethod
+    def _same_image_path(a, b):
+        """两个图片路径是否指向同一张图（大小写/相对路径归一化后比较）。
+
+        路径信息缺失时返回 True（不阻断）：撤销栈的入栈点都会带 image_path，
+        缺省值只用于兼容旧调用，不应因此拒绝正常撤销。
+        """
+        if not a or not b:
+            return True
+        try:
+            return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+        except Exception:
+            return a == b
+
+    def _pop_undo_frame(self, stack, kind):
+        """弹出栈顶一帧，并**校验它属于当前图片**。返回 (frame, error)。
+
+        撤销栈里存了 `image_path` 却从不比对：切图（或切项目）后按 Ctrl+Z，会把
+        **旧图**的标注写进**当前图**的标注文件 —— 静默数据损坏（审计 D3）。
+        这里在写回/落盘之前断言路径一致；不一致就**清栈并拒绝**（栈已跨图失效，
+        留着只会在下一次撤销时再次误写）。
+        """
+        if not stack:
+            return None, None
+        frame = stack.pop()
+        stored_path = frame.get('image_path') or ''
+        if not self._same_image_path(stored_path, self.current_image_path):
+            self.clear_undo_history()
+            return None, ("错误: %s栈里的操作属于另一张图片(%s)，已清空撤销历史，"
+                          "以免把旧图标注写入当前图的标注文件"
+                          % (kind, os.path.basename(stored_path) or '未知'))
+        return frame, None
+
     def undo(self, annotations=None, image_path=""):
         """撤销上次操作。返回 (restored_annotations, error)。"""
         # 优先基于 service 当前标注（与画布共享引用），避免 agent 传入快照副本导致栈记录无效
         annotations = self.current_annotations if self.current_annotations else (annotations or [])
         if not self._undo_stack:
             return None, "错误: 没有可撤销的操作"
+        prev_state, err = self._pop_undo_frame(self._undo_stack, "撤销")
+        if err:
+            return None, err
         current_state = {
             'annotations': copy.deepcopy(annotations),
-            'image_path': image_path
+            'image_path': image_path,
+            'hidden_indices': set(self.hidden_indices or ()),
         }
         self._redo_stack.append(current_state)
-        prev_state = self._undo_stack.pop()
         restored = copy.deepcopy(prev_state['annotations'])
-        # 写回共享数据并保存，确保刷新后可见
-        if self.current_annotations:
-            self.current_annotations[:] = restored
+        # 可见性随标注一同回滚（审计 D21：只回滚标注会让下标集合与列表不自洽）
+        self.hidden_indices = set(prev_state.get('hidden_indices') or ())
+        # 写回共享数据并保存，确保刷新后可见。
+        #
+        # 注意这里**不能**用 `if self.current_annotations:` 做守卫 —— 那是拿
+        # "即将被替换掉的状态"当条件：清除全部标注后 current_annotations 是空列表，
+        # 守卫直接跳过写回，于是撤销只恢复了可见性、标注列表仍是空的
+        # （H2 抓到的真实缺陷）。统一走 session 的受控入口，空列表也能正常写回。
+        self.set_current_annotations(restored)
         self.save_current(annotations=restored)
         self._publish_annotations_changed(source="undo")
         return restored, None
@@ -1604,16 +1974,19 @@ class ManualAnnotationService:
         annotations = self.current_annotations if self.current_annotations else (annotations or [])
         if not self._redo_stack:
             return None, "错误: 没有可重做的操作"
+        next_state, err = self._pop_undo_frame(self._redo_stack, "重做")
+        if err:
+            return None, err
         current_state = {
             'annotations': copy.deepcopy(annotations),
-            'image_path': image_path
+            'image_path': image_path,
+            'hidden_indices': set(self.hidden_indices or ()),
         }
         self._undo_stack.append(current_state)
-        next_state = self._redo_stack.pop()
         restored = copy.deepcopy(next_state['annotations'])
-        # 写回共享数据并保存，确保刷新后可见
-        if self.current_annotations:
-            self.current_annotations[:] = restored
+        self.hidden_indices = set(next_state.get('hidden_indices') or ())
+        # 写回共享数据并保存，确保刷新后可见（同样不能用真值守卫，见 undo 的说明）
+        self.set_current_annotations(restored)
         self.save_current(annotations=restored)
         self._publish_annotations_changed(source="redo")
         return restored, None
@@ -1805,16 +2178,24 @@ class ManualAnnotationService:
         self._publish_annotations_changed(source="set_annotation_visibility")
         return None
 
-    def set_current_annotations(self, annotations):
-        """设置当前图片标注列表引用（与 draw_area.annotations 共享同一列表对象）。
-        由 interface 在加载标注后调用，两者通过共享引用保持同步——
-        widget 的 append/pop 操作直接反映到 service，无需反向同步。"""
-        self.current_annotations = annotations if annotations is not None else []
+    def set_current_annotations(self, annotations, for_path=None, expected_generation=None):
+        """整体替换当前图片标注列表（真值在 session，与 draw_area.annotations 同源）。
+
+        `for_path` / `expected_generation` 非空时校验"这批标注是不是当前图的、代次是否
+        仍然匹配"：不匹配则**拒绝装载**。这是审计 D2/D3 那类"把 A 图标注装进 B 图
+        当前状态、随后被自动保存写进 B 图文件"的静默数据损坏的直接拦截点。
+        """
+        return self.session.set_annotations(annotations, for_path=for_path,
+                                           expected_generation=expected_generation)
 
     def clear_visibility_state(self):
-        """清空可见性状态（切图时由 interface 调用）。"""
+        """清空可见性状态（切图时由 interface 调用）。
+
+        `loaded=False`：此刻我们**还不知道**新图有哪些标注（标注装载已改为后台
+        进行），因此必须禁止保存 —— 否则会把上一张图的标注写进新图的文件。
+        """
         self.hidden_indices.clear()
-        self.current_annotations = []
+        self.session.set_annotations([], loaded=False)
 
     def next_annotation_index(self, count, current):
         """计算下一个标注索引（循环）。count=0 时返回错误。"""
@@ -1850,6 +2231,71 @@ class ManualAnnotationService:
     @action("manual.save_current",
             description="保存当前图片的标注到磁盘。\n- annotations：当前图片标注列表（可省略，缺省用当前画布/当前标注）\n- image_path：图片路径，留空使用当前图片\n- task_mode：seg/det/obb，留空使用当前任务模式\n- 返回 service 结果 dict（含 status/message）",
             category="标注", params={"annotations": "list", "image_path": "str", "task_mode": "str"}, scope="agent")
+    def schedule_save_current(self, annotations=None, image_path="", task_mode=None):
+        """把「保存当前标注」排入后台写入队列（调用方**不**等待结果）。
+
+        与 save_current 共用同一套守卫/路径解析，区别只在于**写盘发生在后台线程**：
+
+        * 同一路径**最新优先**：连续修改只会落一次盘（取最后一次快照），
+          避免"拖一次鼠标写一次盘"；
+        * 快照在调用线程（GUI）取好（deepcopy），工作线程只做纯 I/O，不碰 GUI 状态；
+        * 标注装载在开始读之前调用 `wait_for_pending_writes`，保证"切走再切回"
+          读到的是最新写入 —— 这是异步化**必须**配套的排序保证；
+        * 事件在这里（提交时、GUI 线程）发布：语义是"标注集合变了"（触发刷新），
+          而不是"磁盘写好了"。save_current 成功后发布的是同一个事件。
+        """
+        if task_mode is None:
+            task_mode = self.context.task_mode
+        if not image_path:
+            image_path = self.current_image_path or ""
+        if not image_path:
+            return {"status": "error", "message": "当前未加载图片，无法保存"}
+        # 与 save_current 完全一致的装载失败保护（审计 D8）
+        if self.session.belongs_to_current(image_path) and not self.session.is_save_allowed:
+            return {"status": "error",
+                    "message": "当前图片的标注未成功装载（文件可能损坏或编码错误），"
+                               "已拒绝保存以防覆盖原始标注文件"}
+
+        source = annotations if annotations is not None else self.current_annotations
+        snapshot = copy.deepcopy(list(source)) if source else []
+        non_project = bool(self.context._is_non_project_mode)
+        output_dir = self.context.output_dir
+        categories = copy.deepcopy(self.context.categories) if self.context.categories else None
+        export_fmt = self.context._non_project_format or "labelme"
+
+        def _write():
+            if non_project:
+                os.makedirs(output_dir, exist_ok=True)
+                return self.save_image_annotations(
+                    image_path, snapshot, fmt=export_fmt,
+                    output_dir=output_dir, categories=categories, project_mode=False)
+            ann_dir = os.path.join(output_dir, "annotations")
+            os.makedirs(ann_dir, exist_ok=True)
+            return self.save_image_annotations(
+                image_path, snapshot, fmt="labelme",
+                output_dir=ann_dir, categories=categories, project_mode=True)
+
+        if not self._writer.submit(image_path, _write):
+            return {"status": "error", "message": "写入队列已关闭，无法保存"}
+        if non_project:
+            # 配置记录仍在 GUI 线程（settings 是共享状态，不能从工作线程写）
+            self.save_non_project_config(task_mode)
+        self._publish_annotations_changed(image_path=image_path,
+                                         source="schedule_save_current")
+        return {"status": "queued", "message": "已排入后台写入队列"}
+
+    def wait_for_pending_writes(self, path, timeout_ms=5000):
+        """等到该路径没有在途/排队的写入。供标注装载与显式保存用（读之前写完）。"""
+        return self._writer.wait_for_path(path, timeout_ms)
+
+    def set_save_failure_handler(self, handler):
+        """设置后台保存失败的回调（在**后台线程**被调用，实现方需自行 marshal 到 GUI）。"""
+        self._writer.set_failure_handler(handler)
+
+    def drain(self, timeout_ms=5000):
+        """Drainable 契约：排空后台写入队列并停止写入线程。"""
+        return self._writer.drain(timeout_ms)
+
     def save_current(self, annotations=None, image_path="", task_mode=None):
         """保存当前图片标注到磁盘。返回 service 结果 dict。"""
         if task_mode is None:
@@ -1858,6 +2304,13 @@ class ManualAnnotationService:
             image_path = self.current_image_path or ""
         if not image_path:
             return {"status": "error", "message": "当前未加载图片，无法保存"}
+        # 装载失败保护（审计 D8）：标注文件损坏/编码错误时，界面会保留内存里的旧
+        # 标注（以免误覆盖），但**绝不能落盘** —— 否则一次自动保存就把空标注写进
+        # 那张图的标注文件，把"可恢复的损坏"变成"确定的数据丢失"。
+        if self.session.belongs_to_current(image_path) and not self.session.is_save_allowed:
+            return {"status": "error",
+                    "message": "当前图片的标注未成功装载（文件可能损坏或编码错误），"
+                               "已拒绝保存以防覆盖原始标注文件"}
         annotations = annotations if annotations is not None else self.current_annotations
         if self.context._is_non_project_mode:
             os.makedirs(self.context.output_dir, exist_ok=True)
@@ -2230,7 +2683,7 @@ class ManualAnnotationService:
                 merged = dict(config)
                 merged["hard_samples"] = hard_list
                 try:
-                    with open(config_path, 'w', encoding='utf-8') as f:
+                    with atomic_open(config_path, 'w', encoding='utf-8') as f:
                         json.dump(merged, f, ensure_ascii=False, indent=4)
                 except Exception as e:
                     print(f"[AnnotationService] 保存难样本失败: {e}")
@@ -2276,7 +2729,7 @@ class ManualAnnotationService:
         os.makedirs(os.path.dirname(split_path), exist_ok=True)
         try:
             normalized = {os.path.normpath(k): v for k, v in image_splits.items()}
-            with open(split_path, 'w', encoding='utf-8') as f:
+            with atomic_open(split_path, 'w', encoding='utf-8') as f:
                 json.dump(normalized, f, indent=2, ensure_ascii=False)
         except Exception:
             print(f"[AnnotationService] Failed to save dataset splits")
@@ -2319,7 +2772,7 @@ class ManualAnnotationService:
         merged.update(config)
         merged["is_non_project"] = True
         try:
-            with open(config_path, 'w', encoding='utf-8') as f:
+            with atomic_open(config_path, 'w', encoding='utf-8') as f:
                 json.dump(merged, f, ensure_ascii=False, indent=4)
         except Exception as e:
             print(f"[AnnotationService] 非项目模式保存配置失败: {e}")
@@ -2366,7 +2819,14 @@ class ManualAnnotationService:
 
         rules = config.get("rules")
         if rules:
+            rules, migrated = migrate_legacy_rules(rules, config.get("rules_schema"))
             self.context.current_project_rules = rules
+            if migrated:
+                print(f"[AnnotationService] 非项目目录的旧版相对规则已迁移为绝对规则: {rules}")
+                self._save_non_project_config_file(output_dir, {
+                    "rules": rules,
+                    "rules_schema": RULES_SCHEMA_VERSION,
+                })
 
         hard_samples = {}
         for item in config.get("hard_samples", []):
@@ -2426,6 +2886,8 @@ class ManualAnnotationService:
         coco_cfg = fmt_config.get("coco", {"ext": ".json", "subdir": "coco_annotations", "filename": "_annotations.coco.json"})
         coco_filename = coco_cfg.get("filename", "_annotations.coco.json")
 
+        load_failed = []      # 文件存在但装载失败（解析/编码错误）
+        empty_files = []      # 文件存在且可解析，但里面没有标注
         for d in search_dirs:
             if is_non_project_mode:
                 files_to_check = (
@@ -2441,22 +2903,36 @@ class ManualAnnotationService:
                             ext = os.path.splitext(file_path)[1].lower()
                             load_kwargs = {"image_path": image_path} if (os.path.basename(file_path) == coco_filename or ext == '.txt') else {}
                             result = load_annotations(file_path, **load_kwargs)
-                            if result.get("annotations"):
-                                fmt_type = 'coco' if os.path.basename(file_path) == coco_filename else (
-                                    self.detect_yolo_format(file_path) if ext == '.txt' else 'labelme')
-                                return {'status': 'success', 'annotations': result["annotations"], 'source_file_type': fmt_type}
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            # 文件存在但装载抛错：这是**错误**，必须与"还没有标注文件"区分
+                            load_failed.append("%s (%s: %s)" % (file_path, type(exc).__name__, exc))
+                            continue
+                        if result.get("annotations"):
+                            fmt_type = 'coco' if os.path.basename(file_path) == coco_filename else (
+                                self.detect_yolo_format(file_path) if ext == '.txt' else 'labelme')
+                            return {'status': 'success', 'annotations': result["annotations"], 'source_file_type': fmt_type}
+                        empty_files.append(file_path)
             else:
                 labelme_path = os.path.join(d, f"{base_name}.json")
                 if os.path.exists(labelme_path):
                     try:
                         result = load_annotations(labelme_path)
-                        if result.get("annotations"):
-                            return {'status': 'success', 'annotations': result["annotations"], 'source_file_type': 'labelme'}
-                    except Exception:
-                        pass
-        return {'status': 'error', 'annotations': [], 'message': 'No annotations found'}
+                    except Exception as exc:
+                        load_failed.append("%s (%s: %s)" % (labelme_path, type(exc).__name__, exc))
+                        continue
+                    if result.get("annotations"):
+                        return {'status': 'success', 'annotations': result["annotations"], 'source_file_type': 'labelme'}
+                    empty_files.append(labelme_path)
+        if load_failed:
+            # 必须与"这张图还没有标注文件"（下面的 'empty'）区分开：界面据此**禁止保存**，
+            # 避免把空标注覆盖到那张可恢复的坏文件上（审计 D8）。原先两者共用 'error'，
+            # 于是"全新的图"也被判定为装载失败 -> **永远无法保存** —— 这是阶段 2 引入
+            # 的严重回归，直到阶段 9 补上保存路径的回归测试才被抓到。
+            return {'status': 'error', 'annotations': [],
+                    'message': '标注文件存在但装载失败: %s' % "; ".join(load_failed[:3])}
+        # 'empty'：这张图**还没有**标注（或标注文件本来就是空的）—— 不是错误，
+        # 界面应允许保存，否则新数据集根本无法标注。
+        return {'status': 'empty', 'annotations': [], 'message': 'No annotations found'}
 
     def infer_split_from_path(self, norm_path):
         path_lower = norm_path.lower().replace("\\", "/")
@@ -2883,7 +3359,7 @@ class ManualAnnotationService:
                 current_idx = self.image_files.index(os.path.normpath(self.current_image_path))
             except ValueError:
                 current_idx = -1
-        visible_indices = {i for i in range(len(self.image_files))}
+        visible_indices = self.visible_image_indices()   # 唯一真值来源（审计 3e）
         target, error = self.navigate_relative(current_idx, direction, visible_indices)
         if error:
             return {"status": "error", "message": error}

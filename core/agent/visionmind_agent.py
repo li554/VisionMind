@@ -7,7 +7,13 @@ VisionMind Agent 封装 — 将 CoreCoder 集成到 VisionMind
 支持动态 tool 管理：根据当前界面自动暴露对应的 action 工具。
 """
 
-from PySide6.QtCore import QObject, Signal, QThread
+import threading
+import time
+import traceback
+from typing import List, Optional
+
+from PySide6.QtCore import QObject, Signal, QThread, QCoreApplication
+from PySide6.QtWidgets import QApplication
 
 
 class LLMWorker(QThread):
@@ -25,11 +31,30 @@ class LLMWorker(QThread):
         self.agent = agent
         self.user_input = user_input
         self.tool_manager = tool_manager
-        self._stop_requested = False  # 停止标志
+        # 停止事件：既做标志位，也作为 run_on_main 的 abort 通道。
+        # 主线程可能正阻塞在 stop_and_wait 的 QThread.wait() 上（不跑事件循环），
+        # worker 若能被打断就不会与主线程互等到超时（审计 D14）。
+        self._stop_event = threading.Event()
 
     def request_stop(self):
         """请求停止：设置标志位，让正在运行的循环在下一个工具调用前退出"""
-        self._stop_requested = True
+        self._stop_event.set()
+
+    @property
+    def _stop_requested(self):
+        """兼容旧读法（等价于停止事件是否已置位）。"""
+        return self._stop_event.is_set()
+
+    def _set_tool_abort_event(self):
+        """把"停止事件 + 本 worker"登记到各工具上，供 run_on_main 的等待侧感知。
+
+        action 工具（非 background）要 marshal 到主线程执行；主线程可能正卡在
+        `stop_and_wait` 的 `QThread.wait()` 上（不跑事件循环）。登记后，等待侧
+        就能在停止请求到来时立刻中止，而不是与主线程互等到超时（审计 D14）。
+        """
+        for tool in getattr(self.agent, "tools", None) or []:
+            if hasattr(tool, "abort_event"):
+                tool.abort_event = self._stop_event
 
     def run(self):
         from core.agent.tools.action_tool import ActionTool
@@ -44,6 +69,7 @@ class LLMWorker(QThread):
                         # 工具执行前检查停止标志
                         if self._stop_requested:
                             raise KeyboardInterrupt("用户已停止执行")
+                        self._set_tool_abort_event()
                         result = orig(**kwargs)
                         self.tool_result.emit(name, result)
                         return result
@@ -61,6 +87,7 @@ class LLMWorker(QThread):
                         def wrapped(*args, **kwargs):
                             if self._stop_requested:
                                 raise KeyboardInterrupt("用户已停止执行")
+                            self._set_tool_abort_event()
                             result = orig(*args, **kwargs)
                             self.tool_result.emit(name, result)
                             return result
@@ -121,6 +148,7 @@ class VisionMindAgent(QObject):
     token_received = Signal(str)  # 流式 token
     stopped = Signal()  # 用户主动停止执行
     bash_approval_requested = Signal(str, object)  # bash 解锁审批 (reason, respond 回调)
+    tool_approval_requested = Signal(str, str, object)  # 高危工具解锁审批 (tool, reason, respond 回调)
     ask_user_requested = Signal(str, object)  # 向用户提问 (questionsJson, respond 回调)
     context_stats = Signal(str)  # 上下文用量摘要 (get_summary JSON + max)
     compression_report = Signal(str)  # 上下文压缩完成报告（手动 /compact 或阈值自动触发）
@@ -141,7 +169,8 @@ class VisionMindAgent(QObject):
         self._last_response = ""  # 最近一次 Agent 完整回复（供自动化测试断言）
         self._plan_mode = False  # 计划模式:仅开放只读工具,产出计划待用户审批
 
-    def initialize(self, api_key: str, base_url: str, model: str, main_window=None):
+    def initialize(self, api_key: str, base_url: str, model: str, main_window=None,
+                   exclude_core_tools: Optional[List[str]] = None):
         """
         初始化 Agent（需要 LLM 配置）
 
@@ -150,6 +179,7 @@ class VisionMindAgent(QObject):
             base_url: LLM API Base URL
             model: 模型名称
             main_window: MainWindow 实例（用于动态 tool 管理）
+            exclude_core_tools: 需要从核心工具集剔除的工具名列表（benchmark 禁用 search_tools 用）
         """
         from core.corecoder import Agent, LLM
         from core.corecoder.tools import ALL_TOOLS
@@ -223,11 +253,27 @@ class VisionMindAgent(QObject):
         self._bash_gate.stop_checker = lambda: bool(
             self._worker is not None and getattr(self._worker, "_stop_requested", False)
         )
+        # 高危工具门控:edit_file/write_file/run_script 可直接改磁盘文件,
+        # 默认锁定,须经 request_approval 向用户申请,审批卡批准后才解锁
+        # (仅当前任务内有效,chat() 每条用户消息重置)
+        from core.agent.tools.approval_gate import (
+            ApprovalGate,
+            HIGH_RISK_TOOLS,
+            LockedTool,
+            RequestApprovalTool,
+        )
+        self._approval_gate = ApprovalGate()
+        self._approval_gate.approval_handler = self._request_tool_approval
+        self._approval_gate.stop_checker = lambda: bool(
+            self._worker is not None and getattr(self._worker, "_stop_requested", False)
+        )
         corecoder_tools = [
-            LockedBashTool(t, self._bash_gate) if t.name == "bash" else t
+            LockedBashTool(t, self._bash_gate) if t.name == "bash" else
+            LockedTool(t, self._approval_gate) if t.name in HIGH_RISK_TOOLS else t
             for t in ALL_TOOLS
         ]
         corecoder_tools.append(RequestBashTool(self._bash_gate))
+        corecoder_tools.append(RequestApprovalTool(self._approval_gate))
         corecoder_tools.append(self._make_ask_user_tool())
         self._core_tools = corecoder_tools + [
             GetStateTool(),
@@ -243,6 +289,11 @@ class VisionMindAgent(QObject):
             RunScriptTool(),
             ViewImageTool(),
         ]
+        # benchmark 工具调度实验：按需剔除核心工具（如 search_tools），
+        # 考察模型在纯「策略暴露集」下(无搜索兜底)的表现。
+        if exclude_core_tools:
+            exclude_set = set(exclude_core_tools)
+            self._core_tools = [t for t in self._core_tools if t.name not in exclude_set]
 
         # 启动意图分析子 Agent（订阅操作记录事件，LLM 通过 QApplication 反查获取）
         try:
@@ -273,6 +324,16 @@ class VisionMindAgent(QObject):
                 self._agent.messages = replace_image_urls_with_captions(self._agent.messages)
             except Exception:
                 pass
+            # 策略回调：compact 策略据此在「工具调用失败」后触发工具集重建
+            # （把失败工具的压缩描述替换为完整 schema），供后续轮次正确调用。
+            if self._tool_manager:
+                strategy = self._tool_manager.get_strategy()
+                try:
+                    if getattr(strategy, "on_round_end", None):
+                        if strategy.on_round_end(self._agent.messages):
+                            self._refresh_tools_after_strategy_change()
+                except Exception as e:
+                    print(f"[VisionMindAgent] 策略 on_round_end 回调异常: {e}")
 
         self._agent._after_round = _round_end
 
@@ -323,15 +384,20 @@ class VisionMindAgent(QObject):
 
         Task 9: 上下文感知过滤 — 不再在此处重建 system_prompt，
         由 chat() 流程统一管理系统提示词生命周期。
+        工具列表构造交由当前调度策略（DynamicToolManager 内维护）分发。
         """
         if not self._agent or not self._tool_manager:
             return
         current_interface = self._tool_manager.get_current_interface()
-        new_tools = self._tool_manager.get_tools_for_context(
+        # 缓存本次构建参数，供策略在 on_round_end 内触发工具集重建时复用
+        self._last_tool_build = dict(
             core_tools=self._core_tools,
             user_input=user_input,
             current_interface=current_interface,
             recent_categories=recent_categories or [],
+        )
+        new_tools = self._tool_manager.build_tools_for_context(
+            **self._last_tool_build,
         )
         # 计划模式:执行类工具整体不可见不可调用(含补充索引)
         if self._plan_mode:
@@ -347,6 +413,46 @@ class VisionMindAgent(QObject):
                 if self._plan_mode and not self._is_read_only_tool(tool):
                     continue
                 self._agent._tool_by_name[tool.name] = tool
+
+    def set_tool_strategy(self, strategy: str):
+        """切换当前工具调度策略（供基准测试/自定义策略注入）。"""
+        if self._tool_manager:
+            self._tool_manager.set_strategy(strategy)
+
+    @property
+    def tool_strategy(self) -> str:
+        """当前工具调度策略名。"""
+        return self._tool_manager.strategy_name if self._tool_manager else "lru"
+
+    def _refresh_tools_after_strategy_change(self):
+        """策略在 on_round_end 内标记工具集需重建时，刷新 agent.tools 及其索引。
+
+        复用最近一次 _update_tools 的构建参数重算工具列表，并补充兜底索引，
+        使后续 LLM 轮次能读到最新的（含被补齐完整描述）工具 schema。
+        """
+        kwargs = getattr(self, "_last_tool_build", None)
+        if not kwargs or not self._agent:
+            return
+        new_tools = self._tool_manager.build_tools_for_context(**kwargs)
+        if self._plan_mode:
+            new_tools = [t for t in new_tools if self._is_read_only_tool(t)]
+        self._agent.tools = new_tools
+        self._agent._tool_by_name = {t.name: t for t in new_tools}
+        for tool in self._tool_manager.get_all_ai_action_tools():
+            if tool.name not in self._agent._tool_by_name:
+                if self._plan_mode and not self._is_read_only_tool(tool):
+                    continue
+                self._agent._tool_by_name[tool.name] = tool
+        from core.agent.system_prompt import mark_dirty
+        mark_dirty()
+        self._agent._system = self._build_system(new_tools)
+        try:
+            self._token_budget.update(
+                self._agent._system, new_tools, self._agent.messages
+            )
+        except Exception:
+            pass
+        self._push_context_stats()
 
     @staticmethod
     def _is_read_only_tool(tool) -> bool:
@@ -483,6 +589,9 @@ class VisionMindAgent(QObject):
         # bash 门控随新任务重置:解锁仅在上一个任务内有效,新任务需重新申请
         if getattr(self, "_bash_gate", None) is not None:
             self._bash_gate.reset()
+        # 高危工具门控随新任务重置:解锁仅在上一个任务内有效,新任务需重新申请
+        if getattr(self, "_approval_gate", None) is not None:
+            self._approval_gate.reset()
 
         from core.agent.prompt_manager import PromptManager
         from core.agent.system_prompt import build_system_prompt, mark_dirty, is_dirty, _get_agents_md
@@ -695,6 +804,33 @@ class VisionMindAgent(QObject):
                 break
         return holder["ok"]
 
+    def _request_tool_approval(self, tool_name: str, reason: str) -> bool:
+        """工作线程调用：向 UI 发出高危工具解锁审批请求并阻塞等待用户决定。
+
+        经 tool_approval_requested 信号跨线程投递到主线程（AgentDialog
+        弹审批卡），用户点击允许/拒绝后经 respond 回调唤醒。超时 120s
+        或用户点「停止」均视为拒绝。
+        """
+        import threading
+
+        ev = threading.Event()
+        holder = {"ok": False}
+
+        def respond(ok: bool):
+            holder["ok"] = bool(ok)
+            ev.set()
+
+        self.tool_approval_requested.emit(tool_name, reason, respond)
+        waited = 0.0
+        while not ev.wait(0.25):
+            waited += 0.25
+            if waited >= 120.0:
+                break
+            worker = self._worker
+            if worker is not None and getattr(worker, "_stop_requested", False):
+                break
+        return holder["ok"]
+
     def _make_ask_user_tool(self):
         """ask_user 工具:工作线程阻塞等待用户在侧栏作答(仅「停止」可打断)。"""
         import json as _json
@@ -739,18 +875,56 @@ class VisionMindAgent(QObject):
 
         若 worker 正阻塞在 LLM 网络请求中，停止标志将在该请求返回后于
         下一个工具调用边界生效，因此等待时间取决于当前 LLM 调用剩余时长。
-        使用 QThread.wait 阻塞等待，不泵事件循环，避免干扰外部事件调度。
+
+        从**工作线程**调用时使用 `QThread.wait` 阻塞等待（不泵事件循环，避免干扰
+        外部事件调度）。但从**主线程**调用时绝不能用它（审计 D14）：
+
+            主线程此刻若阻塞在 wait() 上就不会跑事件循环，而 worker 可能正
+            `run_on_main(...)` 等待主线程执行任务 -> **互等**，界面冻结到 wait 超时
+            （`agent_chat`/`agent_test_action` 的默认 max_wait = 600000ms = 10 分钟）。
+
+        主线程路径改为：先置停止事件（它会立刻打断 worker 在主线程调度器里的等待，
+        见 `main_thread_dispatcher.call` 的 abort_event），然后**泵事件循环**等待，
+        从而既能让 worker 退出，又保持界面响应。
+
         返回 True=已空闲，False=超时仍忙。
         """
         if not (self._worker and self._worker.isRunning()):
             return True
         self._worker.request_stop()
-        finished = self._worker.wait(max_ms)
+
+        app = QCoreApplication.instance()
+        on_main = bool(app) and QThread.currentThread() is app.thread()
+
+        if on_main and QThread.currentThread() is not self._worker:
+            finished = self._wait_pumping_events(max_ms)
+        else:
+            finished = self._worker.wait(max_ms)
+
         if finished:
             print("[VisionMindAgent] 已停止上一任务")
         else:
             print(f"[VisionMindAgent] 等待 worker 退出超时（>{max_ms}ms）")
         return finished
+
+    def _wait_pumping_events(self, max_ms: int) -> bool:
+        """在主线程上等待 worker 退出，同时继续处理事件（界面保持响应）。"""
+        try:
+            from PySide6.QtCore import QEventLoop
+            deadline = time.monotonic() + max(0.0, max_ms / 1000.0)
+            while self._worker and self._worker.isRunning():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    # 超时是真实结果：worker 可能仍卡在 LLM 网络调用里
+                    return False
+                QApplication.processEvents(
+                    QEventLoop.ProcessEventsFlag.AllEvents,
+                    int(min(50, remaining * 1000)))
+                self._worker.wait(1)
+            return True
+        except Exception:
+            traceback.print_exc()
+            return self._worker is None or not self._worker.isRunning()
 
     def reset(self):
         """重置对话历史（重置前自动保存当前会话）

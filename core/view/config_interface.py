@@ -1239,11 +1239,12 @@ class ConfigInterface(Interface):
             '按提供商分组管理大语言模型 API 配置。')
         self._add_ai_providers_section(ai_providers_page)
         # 其他 AI 相关设置（意图分析复用对话 Agent 的提供商/模型，无需独立配置 API Key）
-        ai_other_keys = ['intent_analysis_cooldown']
+        # lru_window_size：lru 调度策略每轮暴露的工具数量上限（0=不裁剪）
+        ai_other_keys = ['lru_window_size', 'intent_analysis_cooldown']
         ai_other_items = [s for s in schema if s.get('key') in ai_other_keys]
         if ai_other_items:
-            self._build_schema_page('ai_agent', 'agent', 'AI 助手配置', '意图分析配置', ai_other_items,
-                                    description='意图分析复用对话 Agent 的提供商与模型，以下为分析频率设置')
+            self._build_schema_page('ai_agent', 'agent', 'AI 助手配置', '工具窗口与意图分析', ai_other_items,
+                                    description='lru 工具窗口控制每轮暴露的工具数量；意图分析复用对话 Agent 的提供商与模型')
 
     def _add_ai_providers_section(self, page):
         """在页面上挂载 AI 提供商管理面板，并在变更时重新初始化 Agent。"""
@@ -1257,15 +1258,22 @@ class ConfigInterface(Interface):
         self._add_schema_section(page, section_title, items)
 
     def _add_schema_section(self, page, section_title, items):
-        """把一组 schema 项构建为一个设置分组并装入页面"""
+        """把一组 schema 项构建为一个设置分组并装入页面
+
+        标题缺失时回退为 key：core.json 的 schema 元数据若被外部改写丢失，
+        这里不能直接 KeyError（那会让整个程序启动即崩），最多降级显示。
+        """
         section = SettingSection(section_title)
         for item in items:
+            key = item.get('key')
+            if not key:
+                continue
             widget = self._create_widget_from_schema(item)
             if widget:
                 self._connect_auto_save_widget(widget, item)
-                self._all_widgets[item['key']] = widget
-                section.add_item(SettingItem(item['key'], item['title'],
-                                            item.get('description', ''), widget))
+                self._all_widgets[key] = widget
+                section.add_item(SettingItem(key, item.get('title') or key,
+                                             item.get('description', ''), widget))
         page.add_section(section)
 
     def _create_widget_from_schema(self, item):
@@ -1304,14 +1312,14 @@ class ConfigInterface(Interface):
             widget.setFixedHeight(ROW_HEIGHT)
             widget.setMinimumWidth(400)
             # 敏感字段（如 API Key）用密码模式显示，避免明文泄露
-            if item.get('key') in ('ai_api_key', 'api_key', 'secret', 'token', 'password'):
+            if item.get('key') in ('api_key', 'secret', 'token', 'password'):
                 from PySide6.QtWidgets import QLineEdit
                 widget.setEchoMode(QLineEdit.EchoMode.Password)
         return widget
 
     def _connect_auto_save_widget(self, widget, item):
-        """连接控件的自动保存信号"""
-        key = item['key']
+        """连接控件的自动保存信号（item 必含 key，由 _add_schema_section 过滤）"""
+        key = item.get('key')
         setting_type = item.get('type', 'string')
 
         if setting_type == 'combo':
@@ -1940,9 +1948,12 @@ class ConfigInterface(Interface):
             self._plugin_configs_widgets[plugin_id] = {}
 
             for setting_def in config_schema:
-                key = setting_def['key']
-                title = setting_def['title']
-                description = setting_def.get('description', setting_def.get('title', ''))
+                key = setting_def.get('key')
+                if not key:
+                    continue
+                # title 缺失时回退为 key（插件 schema 元数据不完整不应让设置界面崩）
+                title = setting_def.get('title') or key
+                description = setting_def.get('description', title)
                 setting_type = setting_def.get('type', 'string')
                 default = setting_def.get('default', None)
                 options = setting_def.get('options', None)
@@ -2147,7 +2158,7 @@ class ConfigInterface(Interface):
         else:
             settings.set(key, value)
             # AI 配置类设置修改后立即生效（无需重启）
-            if key in ('ai_api_key', 'ai_base_url', 'ai_model', 'ai_providers'):
+            if key == 'ai_providers':
                 self._reinit_agent()
 
     def _reinit_agent(self):

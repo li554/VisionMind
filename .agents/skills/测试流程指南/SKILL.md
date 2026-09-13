@@ -402,7 +402,7 @@ class BuiltinActions:
 
 关键点：
 
-- `agent.initialize`：从系统配置读取 `ai_api_key/ai_base_url/ai_model`，已初始化时幂等跳过；未配置 API Key 时返回 `False`
+- `agent.initialize`：从当前激活的 AI 提供商配置读取 API Key（provider 配置），已初始化时幂等跳过；未配置 API Key 时返回 `False`
 - `agent.chat`：异步发送指令，立即返回；Agent 未初始化或忙时返回 `False`
 - `agent.wait_until`：轮询 `e.main_window._ai_agent.is_busy()` 直到 Agent 空闲（LLM 调用 + 工具执行期间主线程仍响应）
 - `agent.result`：打印 `last_response`，便于人工核对 LLM 是否理解指令
@@ -599,7 +599,7 @@ result = {"mean_gray": round(float(gray.mean()),2),
 | `if` | `condition, then, else` | 条件分支 |
 | `ui_responsive` | `message: str` | 断言 UI 响应（对应 `assert.ui_responsive`） |
 | `dialog.op` | `op: str, dialog_type: str, item: str` | 统一对话框交互入口（op=accept/reject/delete_item/clear_all/add_item） |
-| `agent.initialize` | `api_key, base_url, model` | 初始化 AI Agent（从系统配置读取 API Key，幂等） |
+| `agent.initialize` | `api_key, base_url, model` | 初始化 AI Agent（从当前激活提供商读取 API Key，幂等） |
 | `agent.chat` | `text: str` | 向 AI Agent 发送自然语言指令（异步） |
 | `agent.result` | `message: str` | 打印 AI Agent 最近一次完整回复 |
 | `agent.review` | `expected_tools: list, forbidden_tools: list, require_plan: bool, save_report: str` | 审查最近一次 Agent 会话记录（详见 2.11）：无报错/按计划/任务完成/期望工具全部调用/无禁止工具 |

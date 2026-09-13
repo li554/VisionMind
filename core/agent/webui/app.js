@@ -584,10 +584,10 @@ function planApprovalRequested() {
   scrollToBottom(true);
 }
 
-/* ---------------- bash 审批卡 ---------------- */
+/* ---------------- 工具审批卡 ---------------- */
 
-function approvalRequested(reqId, reason) {  const card = el("div", "approval-card");
-  card.appendChild(el("div", "approval-title", "🔐 Agent 申请解锁 bash"));
+function approvalRequested(reqId, tool, reason) {  const card = el("div", "approval-card");
+  card.appendChild(el("div", "approval-title", "🔐 Agent 申请解锁 " + (tool || "bash")));
   card.appendChild(el("div", "approval-reason", reason || "（未提供理由）"));
   const row = el("div", "approval-row");
   const allow = el("button", "approval-btn approval-allow", "允许本次执行");

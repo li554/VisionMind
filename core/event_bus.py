@@ -32,6 +32,8 @@ class StateType:
     UI_STATE = "annotation.ui_state"
     # 任务模式（seg/det/obb）变更
     TASK_MODE_CHANGED = "annotation.task_mode_changed"
+    # 批量自动标注进度（界面据此显示/更新/关闭进度对话框）
+    BATCH_PROGRESS = "annotation.batch_progress"
     # annotation → agent 单向引用
     REFERENCE_ADDED = "annotation.reference_added"
 

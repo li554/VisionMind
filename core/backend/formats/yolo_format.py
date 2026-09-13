@@ -3,6 +3,8 @@ import cv2
 from typing import List, Dict, Any, Optional
 from .base import AnnotationFormat, AnnotationData, SaveData, CategoryInfo
 from ..utils import imread_unicode, imwrite_unicode
+from core.common.atomic_io import atomic_open
+from core.common.atomic_io import atomic_open
 
 
 class YOLOFormat(AnnotationFormat):
@@ -174,7 +176,7 @@ class YOLOFormat(AnnotationFormat):
 
         label_to_id = {cat["name"]: cat["id"] for cat in categories} if categories else {}
 
-        with open(output_path, 'w', encoding='utf-8') as f:
+        with atomic_open(output_path, 'w', encoding='utf-8') as f:
             for inst in annotations:
                 label = inst.get('label', '')
                 class_id = label_to_id.get(label, inst.get('class_id', 0))
@@ -262,7 +264,7 @@ class YOLOFormat(AnnotationFormat):
         for i, name in enumerate(class_names):
             content.append(f"  {i}: {name}")
 
-        with open(yaml_path, 'w', encoding='utf-8') as f:
+        with atomic_open(yaml_path, 'w', encoding='utf-8') as f:
             f.write('\n'.join(content))
 
     @classmethod
@@ -316,14 +318,14 @@ class YOLOFormat(AnnotationFormat):
                                 else:
                                     new_lines.append(line)
                             
-                            with open(filepath, 'w', encoding='utf-8') as f:
+                            with atomic_open(filepath, 'w', encoding='utf-8') as f:
                                 f.writelines(new_lines)
                         except Exception as e:
                             print(f"[YOLOFormat] Failed to update {filepath}: {e}")
             else:
                 class_names[old_class_id] = new_label
 
-            with open(classes_path, 'w', encoding='utf-8') as f:
+            with atomic_open(classes_path, 'w', encoding='utf-8') as f:
                 for name in class_names:
                     f.write(f"{name}\n")
 
@@ -389,14 +391,14 @@ class YOLOFormat(AnnotationFormat):
                             new_lines.append(new_line)
 
                         if removed_count > 0 or id_remapped:
-                            with open(filepath, 'w', encoding='utf-8') as f:
+                            with atomic_open(filepath, 'w', encoding='utf-8') as f:
                                 f.writelines(new_lines)
                             total_processed += 1
                     except Exception as e:
                         print(f"[YOLOFormat] Error processing {filepath}: {e}")
 
             class_names.remove(category_name)
-            with open(classes_path, 'w', encoding='utf-8') as f:
+            with atomic_open(classes_path, 'w', encoding='utf-8') as f:
                 for name in class_names:
                     f.write(f"{name}\n")
 

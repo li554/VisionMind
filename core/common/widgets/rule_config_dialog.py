@@ -13,24 +13,24 @@ from core.common.widgets.base import BaseDialog
 class RuleConfigDialog(BaseDialog):
     """规则配置对话框
 
+    全部规则均为**绝对值规则**：面积/宽度/高度/宽高比/灰度/置信度/最大数量。
+    规则的「启用」由字段是否存在于 rules 中表示，与 project_info.json 完全一致。
+
     Args:
         parent: 父窗口
         initial_rules: 初始规则字典
-        select_examples: 选中的示例列表
         smart_tuning_fn: 智能调参回调函数，签名为
             smart_tuning_fn(image_path, model_type, rules) -> dict
             当提供时显示智能调参按钮，为 None 时隐藏
         image_path: 当前图像路径（传给 smart_tuning_fn）
         model_type: 模型类型（传给 smart_tuning_fn）
     """
-    def __init__(self, parent=None, initial_rules=None, select_examples=None,
+    def __init__(self, parent=None, initial_rules=None,
                  smart_tuning_fn=None, image_path=None, model_type=None):
         super().__init__(parent)
         self.setWindowTitle("规则指定 - 过滤自动标注结果")
         self.setMinimumWidth(450)
         self.rules = initial_rules or {}
-        self.select_examples = select_examples or []
-        self._has_examples = bool(self.select_examples)
         self.smart_tuning_fn = smart_tuning_fn
         self.image_path = image_path
         self.model_type = model_type
@@ -63,152 +63,90 @@ class RuleConfigDialog(BaseDialog):
         max_inst_layout.addWidget(self.max_instances_spin)
         layout.addLayout(max_inst_layout)
 
-        # Area Range
+        # Area Range（绝对值，单位：像素²）
         area_group_layout = QVBoxLayout()
-        if self._has_examples:
-            self.area_cb = CheckBox("启用面积过滤 (相对于示例, 1.0表示原始大小)")
-        else:
-            self.area_cb = CheckBox("启用面积过滤 (绝对值, 单位: 像素)")
+        self.area_cb = CheckBox("启用面积过滤 (绝对值, 单位: 像素²)")
         area_group_layout.addWidget(self.area_cb)
 
         area_layout = QHBoxLayout()
         self.area_min_spin = DoubleSpinBox()
-        if self._has_examples:
-            # 相对模式：负值表示允许缩小的比例
-            self.area_min_spin.setRange(-1.0, 0.0)
-            area_val = self.rules.get('area_range', [0.5, 1.5])[0]
-            self.area_min_spin.setValue(-abs(area_val) if area_val > 0 else area_val)
-        else:
-            # 绝对值模式：直接用像素值
-            self.area_min_spin.setRange(0, 10000000)
-            area_val = self.rules.get('area_range', [100, 50000])[0]
-            self.area_min_spin.setValue(abs(area_val))
+        self.area_min_spin.setRange(0, 10000000)
+        self.area_min_spin.setValue(self.rules.get('area_range', [100, 50000])[0])
         self.area_max_spin = DoubleSpinBox()
-        if self._has_examples:
-            self.area_max_spin.setRange(0.0, 100.0)
-            self.area_max_spin.setValue(self.rules.get('area_range', [0.5, 1.5])[1])
-        else:
-            self.area_max_spin.setRange(0, 10000000)
-            self.area_max_spin.setValue(self.rules.get('area_range', [100, 50000])[1])
+        self.area_max_spin.setRange(0, 10000000)
+        self.area_max_spin.setValue(self.rules.get('area_range', [100, 50000])[1])
 
         self.area_min_spin.setEnabled(False)
         self.area_max_spin.setEnabled(False)
         self.area_cb.setChecked(False)
         self.area_cb.stateChanged.connect(lambda s: [self.area_min_spin.setEnabled(s == Qt.CheckState.Checked.value), self.area_max_spin.setEnabled(s == Qt.CheckState.Checked.value)])
 
-        if self._has_examples:
-            area_layout.addWidget(CaptionLabel("允许负向波动:"))
-            area_layout.addWidget(self.area_min_spin)
-            area_layout.addWidget(CaptionLabel("允许正向波动:"))
-        else:
-            area_layout.addWidget(CaptionLabel("最小面积:"))
-            area_layout.addWidget(self.area_min_spin)
-            area_layout.addWidget(CaptionLabel("最大面积:"))
+        area_layout.addWidget(CaptionLabel("最小面积:"))
+        area_layout.addWidget(self.area_min_spin)
+        area_layout.addWidget(CaptionLabel("最大面积:"))
         area_layout.addWidget(self.area_max_spin)
         area_group_layout.addLayout(area_layout)
         layout.addLayout(area_group_layout)
 
-        # Width Range
+        # Width Range（绝对值，单位：像素）
         width_group_layout = QVBoxLayout()
-        if self._has_examples:
-            self.width_cb = CheckBox("启用宽度过滤 (相对于示例)")
-        else:
-            self.width_cb = CheckBox("启用宽度过滤 (绝对值, 单位: 像素)")
+        self.width_cb = CheckBox("启用宽度过滤 (绝对值, 单位: 像素)")
         width_group_layout.addWidget(self.width_cb)
 
         width_layout = QHBoxLayout()
         self.width_min_spin = DoubleSpinBox()
-        if self._has_examples:
-            self.width_min_spin.setRange(-1.0, 0.0)
-            width_val = self.rules.get('width_range', [0.5, 1.5])[0]
-            self.width_min_spin.setValue(-abs(width_val) if width_val > 0 else width_val)
-        else:
-            self.width_min_spin.setRange(0, 100000)
-            width_val = self.rules.get('width_range', [10, 2000])[0]
-            self.width_min_spin.setValue(abs(width_val))
+        self.width_min_spin.setRange(0, 100000)
+        self.width_min_spin.setValue(self.rules.get('width_range', [10, 2000])[0])
         self.width_max_spin = DoubleSpinBox()
-        if self._has_examples:
-            self.width_max_spin.setRange(0.0, 100.0)
-            self.width_max_spin.setValue(self.rules.get('width_range', [0.5, 1.5])[1])
-        else:
-            self.width_max_spin.setRange(0, 100000)
-            self.width_max_spin.setValue(self.rules.get('width_range', [10, 2000])[1])
+        self.width_max_spin.setRange(0, 100000)
+        self.width_max_spin.setValue(self.rules.get('width_range', [10, 2000])[1])
 
         self.width_min_spin.setEnabled(False)
         self.width_max_spin.setEnabled(False)
         self.width_cb.setChecked(False)
         self.width_cb.stateChanged.connect(lambda s: [self.width_min_spin.setEnabled(s == Qt.CheckState.Checked.value), self.width_max_spin.setEnabled(s == Qt.CheckState.Checked.value)])
 
-        if self._has_examples:
-            width_layout.addWidget(CaptionLabel("允许负向波动:"))
-            width_layout.addWidget(self.width_min_spin)
-            width_layout.addWidget(CaptionLabel("允许正向波动:"))
-        else:
-            width_layout.addWidget(CaptionLabel("最小宽度:"))
-            width_layout.addWidget(self.width_min_spin)
-            width_layout.addWidget(CaptionLabel("最大宽度:"))
+        width_layout.addWidget(CaptionLabel("最小宽度:"))
+        width_layout.addWidget(self.width_min_spin)
+        width_layout.addWidget(CaptionLabel("最大宽度:"))
         width_layout.addWidget(self.width_max_spin)
         width_group_layout.addLayout(width_layout)
         layout.addLayout(width_group_layout)
 
-        # Height Range
+        # Height Range（绝对值，单位：像素）
         height_group_layout = QVBoxLayout()
-        if self._has_examples:
-            self.height_cb = CheckBox("启用高度过滤 (相对于示例)")
-        else:
-            self.height_cb = CheckBox("启用高度过滤 (绝对值, 单位: 像素)")
+        self.height_cb = CheckBox("启用高度过滤 (绝对值, 单位: 像素)")
         height_group_layout.addWidget(self.height_cb)
 
         height_layout = QHBoxLayout()
         self.height_min_spin = DoubleSpinBox()
-        if self._has_examples:
-            self.height_min_spin.setRange(-1.0, 0.0)
-            height_val = self.rules.get('height_range', [0.5, 1.5])[0]
-            self.height_min_spin.setValue(-abs(height_val) if height_val > 0 else height_val)
-        else:
-            self.height_min_spin.setRange(0, 100000)
-            height_val = self.rules.get('height_range', [10, 2000])[0]
-            self.height_min_spin.setValue(abs(height_val))
+        self.height_min_spin.setRange(0, 100000)
+        self.height_min_spin.setValue(self.rules.get('height_range', [10, 2000])[0])
         self.height_max_spin = DoubleSpinBox()
-        if self._has_examples:
-            self.height_max_spin.setRange(0.0, 100.0)
-            self.height_max_spin.setValue(self.rules.get('height_range', [0.5, 1.5])[1])
-        else:
-            self.height_max_spin.setRange(0, 100000)
-            self.height_max_spin.setValue(self.rules.get('height_range', [10, 2000])[1])
+        self.height_max_spin.setRange(0, 100000)
+        self.height_max_spin.setValue(self.rules.get('height_range', [10, 2000])[1])
 
         self.height_min_spin.setEnabled(False)
         self.height_max_spin.setEnabled(False)
         self.height_cb.setChecked(False)
         self.height_cb.stateChanged.connect(lambda s: [self.height_min_spin.setEnabled(s == Qt.CheckState.Checked.value), self.height_max_spin.setEnabled(s == Qt.CheckState.Checked.value)])
 
-        if self._has_examples:
-            height_layout.addWidget(CaptionLabel("允许负向波动:"))
-            height_layout.addWidget(self.height_min_spin)
-            height_layout.addWidget(CaptionLabel("允许正向波动:"))
-        else:
-            height_layout.addWidget(CaptionLabel("最小高度:"))
-            height_layout.addWidget(self.height_min_spin)
-            height_layout.addWidget(CaptionLabel("最大高度:"))
+        height_layout.addWidget(CaptionLabel("最小高度:"))
+        height_layout.addWidget(self.height_min_spin)
+        height_layout.addWidget(CaptionLabel("最大高度:"))
         height_layout.addWidget(self.height_max_spin)
         height_group_layout.addLayout(height_layout)
         layout.addLayout(height_group_layout)
 
-        # Aspect Ratio Range
+        # Aspect Ratio Range（绝对值，W/H）
         aspect_group_layout = QVBoxLayout()
-        self.aspect_cb = CheckBox("启用宽高比过滤 (W/H)")
+        self.aspect_cb = CheckBox("启用宽高比过滤 (绝对值, W/H)")
         aspect_group_layout.addWidget(self.aspect_cb)
 
         aspect_layout = QHBoxLayout()
         self.aspect_min_spin = DoubleSpinBox()
-        if self._has_examples:
-            self.aspect_min_spin.setRange(-1.0, 0.0)
-            aspect_val = self.rules.get('aspect_ratio_range', [0.1, 10.0])[0]
-            self.aspect_min_spin.setValue(-abs(aspect_val) if aspect_val > 0 else aspect_val)
-        else:
-            self.aspect_min_spin.setRange(0.0, 1000.0)
-            aspect_val = self.rules.get('aspect_ratio_range', [0.1, 10.0])[0]
-            self.aspect_min_spin.setValue(abs(aspect_val))
+        self.aspect_min_spin.setRange(0.0, 1000.0)
+        self.aspect_min_spin.setValue(self.rules.get('aspect_ratio_range', [0.1, 10.0])[0])
         self.aspect_max_spin = DoubleSpinBox()
         self.aspect_max_spin.setRange(0.0, 1000.0)
         self.aspect_max_spin.setValue(self.rules.get('aspect_ratio_range', [0.1, 10.0])[1])
@@ -218,42 +156,12 @@ class RuleConfigDialog(BaseDialog):
         self.aspect_cb.setChecked(False)
         self.aspect_cb.stateChanged.connect(lambda s: [self.aspect_min_spin.setEnabled(s == Qt.CheckState.Checked.value), self.aspect_max_spin.setEnabled(s == Qt.CheckState.Checked.value)])
 
-        if self._has_examples:
-            aspect_layout.addWidget(CaptionLabel("允许负向波动:"))
-            aspect_layout.addWidget(self.aspect_min_spin)
-            aspect_layout.addWidget(CaptionLabel("允许正向波动:"))
-        else:
-            aspect_layout.addWidget(CaptionLabel("最小宽高比:"))
-            aspect_layout.addWidget(self.aspect_min_spin)
-            aspect_layout.addWidget(CaptionLabel("最大宽高比:"))
+        aspect_layout.addWidget(CaptionLabel("最小宽高比:"))
+        aspect_layout.addWidget(self.aspect_min_spin)
+        aspect_layout.addWidget(CaptionLabel("最大宽高比:"))
         aspect_layout.addWidget(self.aspect_max_spin)
         aspect_group_layout.addLayout(aspect_layout)
         layout.addLayout(aspect_group_layout)
-
-        # Center Range (偏差范围)
-        center_group_layout = QVBoxLayout()
-        self.center_cb = CheckBox("启用中心点偏差过滤 (单位: 像素)")
-        center_group_layout.addWidget(self.center_cb)
-
-        center_layout = QHBoxLayout()
-        self.center_x_spin = DoubleSpinBox()
-        self.center_x_spin.setRange(0.0, 500.0)
-        self.center_x_spin.setValue(self.rules.get('center_range', [50, 50])[0])
-        self.center_y_spin = DoubleSpinBox()
-        self.center_y_spin.setRange(0.0, 500.0)
-        self.center_y_spin.setValue(self.rules.get('center_range', [50, 50])[1])
-
-        self.center_x_spin.setEnabled(False)
-        self.center_y_spin.setEnabled(False)
-        self.center_cb.setChecked(False)
-        self.center_cb.stateChanged.connect(lambda s: [self.center_x_spin.setEnabled(s == Qt.CheckState.Checked.value), self.center_y_spin.setEnabled(s == Qt.CheckState.Checked.value)])
-
-        center_layout.addWidget(CaptionLabel("X轴偏差 (px):"))
-        center_layout.addWidget(self.center_x_spin)
-        center_layout.addWidget(CaptionLabel("Y轴偏差 (px):"))
-        center_layout.addWidget(self.center_y_spin)
-        center_group_layout.addLayout(center_layout)
-        layout.addLayout(center_group_layout)
 
         # Gray Range (灰度过滤)
         gray_group_layout = QVBoxLayout()
@@ -287,11 +195,11 @@ class RuleConfigDialog(BaseDialog):
         self.conf_cb = CheckBox("启用置信度阈值")
         self.conf_spin = DoubleSpinBox()
         self.conf_spin.setRange(0.0, 1.0)
-        self.conf_spin.setValue(self.rules.get('conf_threshold', 0.3))
+        self.conf_spin.setValue(self.rules.get('conf_threshold', 0.5))
         self.conf_spin.setSingleStep(0.05)
 
-        self.conf_cb.setChecked('conf_threshold' in self.rules if self.rules else True)
-        self.conf_spin.setEnabled('conf_threshold' in self.rules if self.rules else True)
+        self.conf_cb.setChecked(True)
+        self.conf_spin.setEnabled(True)
         self.conf_cb.stateChanged.connect(lambda s: self.conf_spin.setEnabled(s == Qt.CheckState.Checked.value))
 
         conf_layout.addWidget(self.conf_cb)
@@ -328,6 +236,14 @@ class RuleConfigDialog(BaseDialog):
         btn_layout.addStretch(1)
         btn_layout.addWidget(self.btn_ok)
         layout.addLayout(btn_layout)
+
+        # 初始同步：把传入的规则完整映射到各控件。
+        # 规则的「启用」状态由字段是否存在于 rules 中表示（与持久化的
+        # project_info.json、以及实际预测所读取的规则完全一致），因此这里必须
+        # 回填全部复选框，而不能一律置为未勾选 —— 否则对话框显示的启用项与
+        # 文件里的规则不一致（只有置信度显示为启用）。
+        if self.rules:
+            self.set_rules_to_ui(self.rules)
 
     @Slot()
     def on_accept(self):
@@ -386,7 +302,7 @@ class RuleConfigDialog(BaseDialog):
         return self.rules
 
     def get_current_rules_from_ui(self):
-        """从UI控件获取当前规则"""
+        """从UI控件获取当前规则（全部为绝对值规则）"""
         rules = {}
 
         # Text Prompt
@@ -398,33 +314,16 @@ class RuleConfigDialog(BaseDialog):
             rules['max_instances'] = self.max_instances_spin.value()
 
         if self.area_cb.isChecked():
-            if self._has_examples:
-                # 相对模式：后台期望正数比例，取绝对值
-                rules['area_range'] = [abs(self.area_min_spin.value()), self.area_max_spin.value()]
-            else:
-                # 绝对值模式：直接存像素值
-                rules['area_range'] = [self.area_min_spin.value(), self.area_max_spin.value()]
+            rules['area_range'] = [self.area_min_spin.value(), self.area_max_spin.value()]
 
         if self.width_cb.isChecked():
-            if self._has_examples:
-                rules['width_range'] = [abs(self.width_min_spin.value()), self.width_max_spin.value()]
-            else:
-                rules['width_range'] = [self.width_min_spin.value(), self.width_max_spin.value()]
+            rules['width_range'] = [self.width_min_spin.value(), self.width_max_spin.value()]
 
         if self.height_cb.isChecked():
-            if self._has_examples:
-                rules['height_range'] = [abs(self.height_min_spin.value()), self.height_max_spin.value()]
-            else:
-                rules['height_range'] = [self.height_min_spin.value(), self.height_max_spin.value()]
+            rules['height_range'] = [self.height_min_spin.value(), self.height_max_spin.value()]
 
         if self.aspect_cb.isChecked():
-            if self._has_examples:
-                rules['aspect_ratio_range'] = [abs(self.aspect_min_spin.value()), self.aspect_max_spin.value()]
-            else:
-                rules['aspect_ratio_range'] = [self.aspect_min_spin.value(), self.aspect_max_spin.value()]
-
-        if self.center_cb.isChecked():
-            rules['center_range'] = [self.center_x_spin.value(), self.center_y_spin.value()]
+            rules['aspect_ratio_range'] = [self.aspect_min_spin.value(), self.aspect_max_spin.value()]
 
         if self.gray_cb.isChecked():
             rules['gray_range'] = [self.gray_min_spin.value(), self.gray_max_spin.value()]
@@ -442,7 +341,7 @@ class RuleConfigDialog(BaseDialog):
         return rules
 
     def set_rules_to_ui(self, rules):
-        """将规则设置到UI控件"""
+        """将规则设置到UI控件（全部为绝对值规则）"""
         if not rules:
             return
 
@@ -462,11 +361,7 @@ class RuleConfigDialog(BaseDialog):
         # Area Range
         if 'area_range' in rules and len(rules['area_range']) == 2:
             self.area_cb.setChecked(True)
-            val = rules['area_range'][0]
-            if self._has_examples:
-                self.area_min_spin.setValue(-abs(val) if val > 0 else val)
-            else:
-                self.area_min_spin.setValue(abs(val))
+            self.area_min_spin.setValue(abs(rules['area_range'][0]))
             self.area_max_spin.setValue(rules['area_range'][1])
         else:
             self.area_cb.setChecked(False)
@@ -474,11 +369,7 @@ class RuleConfigDialog(BaseDialog):
         # Width Range
         if 'width_range' in rules and len(rules['width_range']) == 2:
             self.width_cb.setChecked(True)
-            val = rules['width_range'][0]
-            if self._has_examples:
-                self.width_min_spin.setValue(-abs(val) if val > 0 else val)
-            else:
-                self.width_min_spin.setValue(abs(val))
+            self.width_min_spin.setValue(abs(rules['width_range'][0]))
             self.width_max_spin.setValue(rules['width_range'][1])
         else:
             self.width_cb.setChecked(False)
@@ -486,11 +377,7 @@ class RuleConfigDialog(BaseDialog):
         # Height Range
         if 'height_range' in rules and len(rules['height_range']) == 2:
             self.height_cb.setChecked(True)
-            val = rules['height_range'][0]
-            if self._has_examples:
-                self.height_min_spin.setValue(-abs(val) if val > 0 else val)
-            else:
-                self.height_min_spin.setValue(abs(val))
+            self.height_min_spin.setValue(abs(rules['height_range'][0]))
             self.height_max_spin.setValue(rules['height_range'][1])
         else:
             self.height_cb.setChecked(False)
@@ -498,22 +385,10 @@ class RuleConfigDialog(BaseDialog):
         # Aspect Ratio Range
         if 'aspect_ratio_range' in rules and len(rules['aspect_ratio_range']) == 2:
             self.aspect_cb.setChecked(True)
-            val = rules['aspect_ratio_range'][0]
-            if self._has_examples:
-                self.aspect_min_spin.setValue(-abs(val) if val > 0 else val)
-            else:
-                self.aspect_min_spin.setValue(abs(val))
+            self.aspect_min_spin.setValue(abs(rules['aspect_ratio_range'][0]))
             self.aspect_max_spin.setValue(rules['aspect_ratio_range'][1])
         else:
             self.aspect_cb.setChecked(False)
-
-        # Center Range
-        if 'center_range' in rules and len(rules['center_range']) == 2:
-            self.center_cb.setChecked(True)
-            self.center_x_spin.setValue(rules['center_range'][0])
-            self.center_y_spin.setValue(rules['center_range'][1])
-        else:
-            self.center_cb.setChecked(False)
 
         # Gray Range
         if 'gray_range' in rules and len(rules['gray_range']) == 2:

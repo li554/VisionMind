@@ -2,6 +2,8 @@ from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional, TypedDict
 import os
 
+from core.common.atomic_io import atomic_open
+
 
 class ImageInfo(TypedDict, total=False):
     """图像信息"""
@@ -171,7 +173,7 @@ class AnnotationFormat(ABC):
         try:
             os.makedirs(dir_path, exist_ok=True)
             sorted_categories = sorted(categories, key=lambda x: x.get("id", 0))
-            with open(classes_path, 'w', encoding='utf-8') as f:
+            with atomic_open(classes_path, 'w', encoding='utf-8') as f:
                 for cat in sorted_categories:
                     f.write(f"{cat.get('name', '')}\n")
         except Exception as e:

@@ -859,16 +859,39 @@
   {
     "key": "enabled_interactive_models",
     "value": [
+      "hqsam_onnx_l",
+      "hqsam_onnx_b",
+      "hqsam_tiny",
+      "hqsam_l",
+      "hqsam_b",
       "sam2_onnx_l",
       "sam2_onnx_b",
-      "mobilesam_onnx"
+      "sam2_l",
+      "sam2_b",
+      "sam_onnx_l",
+      "sam_onnx_b",
+      "mobilesam_onnx",
+      "sam_h",
+      "sam_l",
+      "sam_b"
     ]
   },
   {
     "key": "enabled_auto_models",
     "value": [
+      "fs_sam2_onnx_l",
+      "fs_sam2_onnx_b",
+      "fs_hqsam_onnx_l",
+      "fs_hqsam_onnx_b",
+      "fs_sam_onnx_l",
+      "fs_sam_onnx_b",
+      "fs_mobilesam_onnx",
+      "fs_sam3",
       "sam3",
-      "trtsam3"
+      "trtsam3",
+      "yoloe-26s",
+      "yoloe-26n",
+      "yoloe-26x"
     ]
   },
   {
@@ -881,14 +904,6 @@
   },
   {
     "key": "output_dir",
-    "value": "D:\\PycharmProjects\\Work\\VisionLeeQT\\projects\\test_agent_fixture"
-  },
-  {
-    "key": "last_idx_1084ce65",
-    "value": 0
-  },
-  {
-    "key": "last_opened_dir",
     "value": "D:\\PycharmProjects\\Work\\VisionLeeQT\\projects\\test_agent_fixture"
   },
   {
@@ -922,30 +937,37 @@
     "value": {
       "providers": [
         {
-          "id": "agnes",
+          "id": "default",
           "name": "Agnes",
-          "base_url": "https://apihub.agnes-ai.com/v1/chat/completions",
+          "base_url": "https://apihub.agnes-ai.com/v1",
           "api_key": "",
           "models": [
             {
-              "name": "agnes-2.0-flash",
-              "max_input_tokens": 16384,
-              "max_output_tokens": 4096,
+              "name": "agnes-2.5-flash",
+              "max_input_tokens": 256000,
+              "max_output_tokens": 32000,
               "supports_image": true
             }
           ],
-          "default_model": "agnes-2.0-flash"
+          "default_model": "agnes-2.5-flash"
         },
         {
-          "id": "p38dca42d",
-          "name": "opencode",
-          "base_url": "https://api.deepseek.com",
+          "id": "pf1eb5da7",
+          "name": "opencode go",
+          "base_url": "https://opencode.ai/zen/go/v1",
           "api_key": "",
-          "models": [],
-          "default_model": ""
+          "models": [
+            {
+              "name": "mimo-v2.5",
+              "max_input_tokens": 256000,
+              "max_output_tokens": 32000,
+              "supports_image": true
+            }
+          ],
+          "default_model": "mimo-v2.5"
         }
       ],
-      "active_provider": "agnes"
+      "active_provider": "pf1eb5da7"
     },
     "description": "按提供商分组的多模型配置。每个模型可独立配置输入/输出 token 上限与是否支持图像。"
   },
@@ -966,18 +988,6 @@
     "default": 30,
     "value": 30.0,
     "description": "两次意图分析（LLM 调用）之间的最小时间间隔（秒）。值越小分析越频繁，会增加 LLM 调用次数与费用。推荐 30。"
-  },
-  {
-    "key": "last_idx_6d78a1f5",
-    "value": 11
-  },
-  {
-    "key": "last_idx_52335089",
-    "value": 0
-  },
-  {
-    "key": "last_idx_9a0fbef7",
-    "value": 0
   },
   {
     "key": "agent_solo_mode",
@@ -1001,27 +1011,17 @@
     }
   },
   {
-    "key": "last_idx_1897c1af",
-    "value": 7
-  },
-  {
-    "key": "last_idx_5c4a6348",
-    "value": 0
-  },
-  {
-    "key": "last_idx_0e1e8dbf",
-    "value": 1
-  },
-  {
-    "key": "last_idx_fdf22221",
-    "value": 0
-  },
-  {
     "key": "plain_model",
     "value": "yolo26s"
   },
   {
-    "key": "last_idx_7d099e46",
-    "value": 75
+    "key": "lru_window_size",
+    "title": "LRU 工具窗口大小",
+    "description": "lru 策略每轮暴露的 action 工具数量上限；0=不裁剪（保持原行为）。保底工具（LRU 激活 + 当前指令关键词命中）永不被裁剪，超出窗口时窗口自动扩张。",
+    "type": "int",
+    "min": 0,
+    "max": 200,
+    "default": 0,
+    "value": 0
   }
 ]

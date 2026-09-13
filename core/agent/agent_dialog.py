@@ -860,24 +860,27 @@ class MessageBubble(QFrame):
 # ============================================================================
 
 class BashApprovalCard(QFrame):
-    """bash 解锁申请审批卡：展示 agent 的解锁理由，等待用户允许/拒绝。
+    """工具解锁审批卡：展示 agent 的解锁理由，等待用户允许/拒绝。
 
     respond 回调由工作线程的 threading.Event 消费（见
-    VisionMindAgent._request_bash_approval），点击任一按钮即唤醒。
-    超时/停止时无人再消费回调，卡片保持已答状态即可。
+    VisionMindAgent._request_bash_approval / _request_tool_approval），
+    点击任一按钮即唤醒。超时/停止时无人再消费回调，卡片保持已答状态即可。
+    tool 参数为 None 时按 bash 审批卡渲染（向后兼容）。
     """
 
-    def __init__(self, reason: str, respond, parent=None):
+    def __init__(self, reason: str, respond, tool: str = None, parent=None):
         super().__init__(parent)
         self.setObjectName("BashApprovalCard")
         self._respond = respond
         self._answered = False
 
+        tool = tool or "bash"
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(8)
 
-        title = QLabel("🔐 Agent 申请解锁 bash")
+        title = QLabel(f"🔐 Agent 申请解锁 {tool}")
         title.setObjectName("BashApprovalTitle")
         title.setWordWrap(True)
         layout.addWidget(title)
@@ -1637,7 +1640,7 @@ class InputArea(QFrame):
                 return
 
     def _on_ai_model_changed(self, key: str, value):
-        if key in ("ai_model", "ai_providers"):
+        if key == "ai_providers":
             self._reload_models()
 
     def _on_model_selected(self, model: str):
@@ -2130,6 +2133,14 @@ class AgentDialog(QFrame):
     def request_bash_approval(self, reason: str, respond) -> None:
         """展示 bash 解锁审批卡（跨线程调用，respond 由工作线程 Event 消费）"""
         card = BashApprovalCard(reason, respond)
+        self._messages_layout.insertWidget(
+            self._messages_layout.count() - 1, card
+        )
+        self._scroll_to_bottom()
+
+    def request_tool_approval(self, tool: str, reason: str, respond) -> None:
+        """展示高危工具解锁审批卡（跨线程调用，respond 由工作线程 Event 消费）"""
+        card = BashApprovalCard(reason, respond, tool=tool)
         self._messages_layout.insertWidget(
             self._messages_layout.count() - 1, card
         )

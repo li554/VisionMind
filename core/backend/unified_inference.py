@@ -250,7 +250,8 @@ def prepare_support_sets(support_paths, read_image_fn=None):
         tuple: (support_images, support_infos, support_rules)
             - support_images: 支持集图像列表
             - support_infos: dict，包含 boxes 和 polygons
-            - support_rules: dict，包含 avg_area, avg_width, avg_height, avg_aspect_ratio, avg_center_x, avg_center_y, image_size
+            - support_rules: dict，包含 avg_area, avg_width, avg_height, avg_aspect_ratio, image_size
+        （示例统计仅为界面参考值；过滤规则已全部改为绝对阈值，不再依赖这些统计）
         如果失败返回 (None, None, None)
     """
     if read_image_fn is None:
@@ -264,7 +265,6 @@ def prepare_support_sets(support_paths, read_image_fn=None):
     all_widths = []
     all_heights = []
     all_aspect_ratios = []
-    all_centers = []
     image_sizes = []
 
     for support_path in support_paths:
@@ -310,10 +310,6 @@ def prepare_support_sets(support_paths, read_image_fn=None):
             all_heights.append(h)
             aspect_ratio = w / h if h > 0 else 1.0
             all_aspect_ratios.append(aspect_ratio)
-            # 计算中心点
-            center_x = x + w / 2
-            center_y = y + h / 2
-            all_centers.append((center_x, center_y))
         else:
             all_bboxes.append([])
 
@@ -325,15 +321,13 @@ def prepare_support_sets(support_paths, read_image_fn=None):
     support_infos["boxes"] = all_bboxes
     support_infos["polygons"] = all_polygons
 
-    # 计算支持集规则信息
+    # 计算支持集参考统计（仅供智能调参界面展示参考值，不再参与规则过滤）
     support_rules = {}
     if all_areas:
         support_rules["avg_area"] = sum(all_areas) / len(all_areas)
         support_rules["avg_width"] = sum(all_widths) / len(all_widths)
         support_rules["avg_height"] = sum(all_heights) / len(all_heights)
         support_rules["avg_aspect_ratio"] = sum(all_aspect_ratios) / len(all_aspect_ratios)
-        support_rules["avg_center_x"] = sum(c[0] for c in all_centers) / len(all_centers)
-        support_rules["avg_center_y"] = sum(c[1] for c in all_centers) / len(all_centers)
         support_rules["image_size"] = image_sizes[0] if image_sizes else None
 
     return (support_images, support_infos, support_rules)

@@ -33,33 +33,39 @@ class _ThumbnailTask(QRunnable):
         self.signals.done.connect(on_done)
 
     def run(self):
+        canvas = None
         try:
-            if not os.path.isfile(self.path):
-                return
-            reader = QImageReader(self.path)
-            reader.setAutoTransform(True)
-            src = reader.size()
-            if src.isValid() and src.width() > 0 and src.height() > 0:
-                # 读取时先做快速降采样，控制解码内存（QSize.scaled 无质量参数）
-                reader.setScaledSize(
-                    src.scaled(self.size, Qt.AspectRatioMode.KeepAspectRatio))
-            image = reader.read()
-            if image.isNull():
-                return
-            # 等比缩放后居中填充到目标正方形，保证列表里每个缩略图
-            # 占用相同的像素宽，图像名因此能保持左对齐
-            image = image.scaled(self.size, Qt.AspectRatioMode.KeepAspectRatio,
-                                 Qt.TransformationMode.SmoothTransformation)
-            canvas = QImage(self.size, QImage.Format_ARGB32)
-            canvas.fill(Qt.GlobalColor.transparent)
-            painter = QPainter(canvas)
-            painter.drawImage((self.size.width() - image.width()) // 2,
-                              (self.size.height() - image.height()) // 2, image)
-            painter.end()
-            self.signals.done.emit(self.path, canvas)
+            if os.path.isfile(self.path):
+                reader = QImageReader(self.path)
+                reader.setAutoTransform(True)
+                src = reader.size()
+                if src.isValid() and src.width() > 0 and src.height() > 0:
+                    # 读取时先做快速降采样，控制解码内存（QSize.scaled 无质量参数）
+                    reader.setScaledSize(
+                        src.scaled(self.size, Qt.AspectRatioMode.KeepAspectRatio))
+                image = reader.read()
+                if not image.isNull():
+                    # 等比缩放后居中填充到目标正方形，保证列表里每个缩略图
+                    # 占用相同的像素宽，图像名因此能保持左对齐
+                    image = image.scaled(self.size, Qt.AspectRatioMode.KeepAspectRatio,
+                                         Qt.TransformationMode.SmoothTransformation)
+                    canvas = QImage(self.size, QImage.Format_ARGB32)
+                    canvas.fill(Qt.GlobalColor.transparent)
+                    painter = QPainter(canvas)
+                    painter.drawImage((self.size.width() - image.width()) // 2,
+                                      (self.size.height() - image.height()) // 2, image)
+                    painter.end()
         except Exception:
             # 缩略图失败不影响主流程，条目保留占位图标
-            pass
+            canvas = None
+        finally:
+            # 必须**必定**发射 done：`_pending` 的清除只发生在接收端
+            # `_on_task_done` 里（`_pending.discard`）。若失败路径直接 return，
+            # 该路径会永久留在"在途"集合里，此后 `request()` 每次都会因
+            # `path in self._pending` 直接返回 -> **永不重试**
+            #（`clear_pending()` 全仓无调用者，也没有别的复位手段）。
+            self.signals.done.emit(self.path, canvas if canvas is not None else QImage())
+
 
 
 class ThumbnailManager(QObject):
@@ -116,3 +122,31 @@ class ThumbnailManager(QObject):
     def clear_pending(self):
         """清空在途请求记录（列表重建后由调用方重新发起）"""
         self._pending.clear()
+
+    def active_count(self):
+        """当前活跃解码线程数（测试/诊断用）。"""
+        return self._pool.activeThreadCount()
+
+    def wait_idle(self, timeout_ms=3000):
+        """等待在途缩略图解码结束（不取消、不清在途集合）。
+
+        删除图片文件前必须调用：Windows 上解码进行中 `os.remove` 会
+        `WinError 32`。打开一个目录会一次性为所有可见行排入缩略图任务，
+        因此"刚打开目录就删图"原本必定失败（已实测复现）。
+        """
+        return bool(self._pool.waitForDone(int(timeout_ms)))
+
+    def pending_count(self):
+        """当前"在途"路径数（测试/诊断用：验证失败路径不再永久滞留）。"""
+        return len(self._pending)
+
+    def drain(self, timeout_ms=5000):
+        """等待在途缩略图解码结束（关闭路径调用，实现 Drainable 契约）。
+
+        返回是否在超时内排空。刻意不调用 `QThreadPool.clear()`：它会直接删除
+        尚未开始的 QRunnable，而这里的 QRunnable 同时被 Python 侧持有，
+        走"让它自己跑完（失败路径也已保证必定发信号、不会卡住 _pending）"更稳。
+        排空前先清空在途集合，让本轮列表重建不再复用旧的在途记录。
+        """
+        self._pending.clear()
+        return bool(self._pool.waitForDone(int(timeout_ms)))

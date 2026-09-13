@@ -2,11 +2,13 @@ import copy
 import json
 import os
 import re
+import threading
+import time
 import traceback
 
 import cv2
 import numpy as np
-from PySide6.QtCore import Qt, QPointF, Slot, Signal, QSize, QPoint, QEvent
+from PySide6.QtCore import Qt, QPointF, Slot, Signal, QSize, QPoint, QEvent, QThread, QTimer
 from PySide6.QtGui import QPixmap, QIcon, QColor, QCursor
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFileDialog, QListWidgetItem,
                                QSplitter, QApplication, QSizePolicy, QDialog, QProgressDialog, QLabel,
@@ -15,6 +17,8 @@ from qfluentwidgets import (PrimaryPushButton, PushButton, TransparentToolButton
                             LineEdit, SearchLineEdit, FluentIcon as FIF, InfoBar, ListWidget,
                             SwitchButton, ComboBox, CheckBox, MessageBox, RoundMenu, Action)
 
+from core.common.background_task import BackgroundTaskRunner
+from core.common.main_thread_dispatcher import run_on_main
 from core.common.widgets.base import Interface, ProgressDialog
 from plugins.annotation.widgets.drawing_widget import DrawingWidget, DrawingMode
 from plugins.annotation.widgets.thumbnail_manager import ThumbnailManager
@@ -253,6 +257,9 @@ class AnnotationInterface(Interface):
         self.project_service = project_service  # 项目服务
         # We'll use the same service as AutoAnnotation for SAM
         self.model_manager = self.auto.model_manager  # 模型管理器（异步加载 + 模型列表）
+        # 自动保存（silent=True）已改为后台写盘，调用方拿不到返回值 —— 因此写盘失败
+        # **必须**显式上报到界面，否则就是"静默丢数据"（审计 D35 那类编码失败会被吞掉）。
+        self.manual.set_save_failure_handler(self._on_background_save_failed)
         self.dataset_service = DatasetService()  # 数据集服务
         saved_plain_model = settings.get("plain_model", "")
         if saved_plain_model:
@@ -263,9 +270,33 @@ class AnnotationInterface(Interface):
         self._recent_categories = []  # 最近使用的类别顺序（用于快捷切换）
         self.current_category = project_settings.get("current_category") or settings.get("current_category", "")  # 当前选中类别
         self.project_has_own_categories = False
-        self.current_image_path = None  # 当前图片路径
+        # 注意：current_image_path 是**只读 property**，真值在 manual.session
+        # （唯一状态所有者）。原先 interface 自己存一份，是审计 W2 的三份真值之一。
         self._event_bus = None  # 由 AnnotationPlugin.on_load 注入
         self.image_files = []  # 图片文件列表
+
+        # 标注装载的后台执行器（"IO 全在后台"：逐图标注的读盘 + 解析不再占用 GUI
+        # 线程）。单任务 + 最新优先：正在跑时新请求只覆盖
+        # `_pending_annotation_request`，因此连按方向键不会积压一串读盘任务。
+        # 实现 Drainable 契约，关闭时由 ShutdownCoordinator 排空。
+        self._annotation_runner = BackgroundTaskRunner(parent=self, max_threads=1,
+                                                       name="annotation.load")
+        self._pending_annotation_request = None
+
+        # 搜索扫描的后台执行器（审计 D15）：带筛选的搜索要逐图读盘解析标注，
+        # 原先在每次击键的 GUI 线程上同步执行。现在击键只置脏 + 去抖，扫描在后台。
+        self.SEARCH_DEBOUNCE_MS = 150
+        self._search_runner = BackgroundTaskRunner(parent=self, max_threads=1,
+                                                   name="annotation.search")
+        self._pending_search_request = None
+        self._search_generation = 0
+        self._search_debounce = QTimer(self)
+        self._search_debounce.setSingleShot(True)
+        self._search_debounce.setInterval(self.SEARCH_DEBOUNCE_MS)
+        self._search_debounce.timeout.connect(self._on_search_debounce_timeout)
+        # 列表重建闸门（审计 D16）：重建会销毁列表行及其子控件，绝不能发生在
+        # 某个子控件的信号发射栈上
+        self._list_rebuilding = False
         
         # Save settings
         self.auto_save_enabled = True  # 自动保存开关
@@ -291,6 +322,7 @@ class AnnotationInterface(Interface):
         self.batch_mode = None # "text" or "example"
         self.batch_prompt_data = None
         self.batch_rules = None
+        self._batch_progress_dialog = None  # 批量自动标注进度对话框（BATCH_PROGRESS 事件驱动）
         
         self.image_splits = {} # image_path -> "train"|"val"|"test"  # 数据集划分
         self.load_dataset_splits()
@@ -357,16 +389,53 @@ class AnnotationInterface(Interface):
 
         service 的嵌套调用（如 delete_annotation -> save_current）会连续发布多次
         annotations_changed，签名未变化时跳过刷新，避免重复刷新同一状态。
+
+        **签名必须覆盖"真实编辑"的维度**（审计 D33）：原实现只记录
+        `len(a.get("polygons"))` —— 移动一个多边形顶点、改一条多边形的形状，
+        标注元素个数与标签、bbox 都没变 -> 签名不变 -> **刷新被抑制**，
+        画布与列表停留在旧几何上。因此这里把几何也纳入签名：
+          * bbox 用数值元组（而不是 `str()`，避免格式差异造成假变化）；
+          * 每条多边形的**顶点坐标**参与；
+          * SAM 点、rotated/obb 的额外字段一并覆盖。
+        签名只用于"是否跳过同一次事件的重复刷新"，因此宁可灵敏也不要漏判。
         """
         anns = getattr(self.manual, "current_annotations", None) or []
+
+        def _geom(a):
+            polys = []
+            for poly in (a.get("polygons") or []):
+                try:
+                    polys.append(tuple((float(p[0]), float(p[1])) for p in poly))
+                except (TypeError, ValueError, IndexError):
+                    polys.append(("?",))
+            return tuple(polys)
+
+        def _bbox(a):
+            bbox = a.get("bbox")
+            try:
+                return tuple(float(v) for v in bbox) if bbox else ()
+            except (TypeError, ValueError):
+                return (str(bbox),)
+
         brief = []
         for a in anns:
             if isinstance(a, dict):
-                brief.append((str(a.get("label", "")), str(a.get("bbox")),
-                              len(a.get("polygons") or [])))
+                brief.append((str(a.get("label", "")), _bbox(a), _geom(a),
+                              str(a.get("shape_type", ""))))
         hidden = frozenset(getattr(self.manual, "hidden_indices", None) or ())
         sec = len(getattr(self.manual, "secondary_annotations", None) or [])
         return (len(brief), tuple(brief), hidden, sec)
+
+    def reset_annotations_refresh_state(self):
+        """清掉"上次已刷新过的标注签名"缓存（审计 D33）。
+
+        这份缓存是**派生状态**（用于同一事件内的重复刷新去重），不是标注真值本身。
+        但它必须在"标注真值被整体替换"的时刻失效 —— 原先 `clear_project` /
+        `_do_set_project` 不重置它，切换项目后若新项目的标注恰好与旧的同签名，
+        刷新就会被跳过，画布/列表停留在旧内容上。
+        """
+        self._last_ann_path = None
+        self._last_ann_sig = None
 
     def on_annotations_changed(self, data):
         """订阅 annotation:annotations_changed：标注集合变更后刷新标注列表与画布。"""
@@ -464,6 +533,96 @@ class AnnotationInterface(Interface):
             if settings.DEBUG:
                 raise
 
+    # ---------------- 批量自动标注进度对话框 ----------------
+
+    _BATCH_MODE_TITLES = {
+        "text": "基于文本自动标注",
+        "example": "基于示例自动标注",
+        "model": "基于普通模型自动标注",
+    }
+
+    def on_batch_progress(self, data):
+        """订阅 annotation:batch_progress：批量自动标注时显示/更新/关闭进度对话框。
+
+        两种发起路径都必须把事件 marshal 回主线程，因此这里更新控件是安全的：
+        菜单/快捷键发起时批量跑在 BackgroundTaskRunner 的线程上，agent 发起时跑在
+        LLMWorker 线程上（service 侧 `batch.one_click_by_all` 标了 background=True）。
+        两条路径都不再需要 processEvents —— GUI 线程在批量期间始终空闲。
+        """
+        try:
+            data = data or {}
+            phase = data.get("phase")
+            if phase == "start":
+                self._show_batch_progress(data)
+            elif phase == "progress":
+                self._update_batch_progress(data)
+            elif phase == "finished":
+                self._close_batch_progress()
+        except Exception:
+            if settings.DEBUG:
+                raise
+
+    def _show_batch_progress(self, data):
+        """创建并显示批量标注进度对话框（带取消按钮）。
+
+        批量标注可能由菜单在主线程同步执行（此时用 WindowModal 阻止用户在批量
+        过程中触发其它标注操作），也可能由 agent 在后台线程执行（此时沿用导出
+        等长任务的 NonModal 样式，用户仍可操作界面）。两种情况下 EventBus 都会
+        保证该回调在主线程执行。
+        """
+        total = max(1, int(data.get("total") or 0))
+        self._close_batch_progress()
+        title = self._BATCH_MODE_TITLES.get(data.get("mode"), "自动标注")
+        dialog = ProgressDialog(title, f"共 {total} 张图片，正在自动标注...",
+                                parent=self, has_cancel=True)
+        app = QApplication.instance()
+        on_gui_thread = app is None or QThread.currentThread() is app.thread()
+        dialog.setWindowModality(Qt.WindowModal if on_gui_thread else Qt.NonModal)
+        dialog.setRange(0, total)
+        dialog.setValue(0)
+        dialog.canceled.connect(self._on_batch_progress_canceled)
+        # 点关闭/按 Esc 也视为取消，避免对话框消失后批量标注在无可见进度下继续跑
+        dialog.rejected.connect(self._on_batch_progress_canceled)
+        dialog.show()
+        self._batch_progress_dialog = dialog
+
+    def _update_batch_progress(self, data):
+        """更新批量标注进度（进度条 + 当前图片）。"""
+        dialog = getattr(self, "_batch_progress_dialog", None)
+        if dialog is None:
+            return
+        total = max(1, int(data.get("total") or 0))
+        processed = max(0, int(data.get("processed") or 0))
+        dialog.setRange(0, total)
+        dialog.setValue(min(processed, total))
+        image = data.get("image") or ""
+        if image:
+            dialog.setLabelText(f"正在标注 ({processed}/{total}): {os.path.basename(image)}")
+        # 这里**不再**调用 QApplication.processEvents()：批量标注已由
+        # BackgroundTaskRunner 放到后台线程执行，GUI 线程本来就空闲，Qt 会自然重绘。
+        # 在状态变更处理器内重入事件循环会让用户在批量进行中触发切图/保存/删除，
+        # 那正是审计列的 P1 重入缺陷。
+
+    def _close_batch_progress(self):
+        """关闭批量标注进度对话框（程序化关闭，不再触发取消信号）。"""
+        dialog = getattr(self, "_batch_progress_dialog", None)
+        self._batch_progress_dialog = None
+        if dialog is not None:
+            try:
+                dialog.blockSignals(True)
+                dialog.close()
+                dialog.deleteLater()
+            except RuntimeError:
+                pass
+
+    def _on_batch_progress_canceled(self):
+        """用户取消（取消按钮 / 关闭 / Esc）：请求中止批量自动标注。"""
+        self._close_batch_progress()
+        try:
+            self.auto.cancel_batch()
+        except Exception:
+            pass
+
     def _send_reference(self, ref_text: str):
         """把引用文本通过统一状态信号广播到 Agent 对话输入框(不自动发送)。"""
         if self._event_bus:
@@ -553,6 +712,9 @@ class AnnotationInterface(Interface):
         
         self._is_setting_project = True
         
+        # 项目切换会整体替换标注真值：派生签名缓存必须作废（D33）
+        self.reset_annotations_refresh_state()
+        
         try:
             print(f"[AnnotationInterface] Executing project setup: {new_project_name}")
 
@@ -566,25 +728,14 @@ class AnnotationInterface(Interface):
             self.one_click_running = False
             self.one_click_paused = False
 
-            if hasattr(self.draw_area, 'loader') and self.draw_area.loader:
-                if self.draw_area.loader.isRunning():
-                    try:
-                        self.draw_area.loader.requestInterruption()
-                        if not self.draw_area.loader.wait(500):
-                            self.draw_area.loader.terminate()
-                            self.draw_area.loader.wait(200)
-                    except Exception as e:
-                        print(f"[AnnotationInterface] Error stopping loader: {e}")
-                    try:
-                        self.draw_area.loader.finished.disconnect()
-                        self.draw_area.loader.error.disconnect()
-                    except:
-                        pass
-                self.draw_area.loader = None
-                # 使排队的信号失效
-                self.draw_area._load_generation += 1
+            # 立即作废所有在途图像解码（非阻塞）。解码线程由 DrawingWidget 内部的
+            # QThreadPool 持有，所以这里不需要也不能 wait/terminate —— 递增代次后
+            # 在途任务会自行发现过期并丢弃结果。放在清列表之前，避免旧项目的解码
+            # 结果在这段窗口里被提交到画布上。
+            self.draw_area.cancel_pending_load()
             
-            self.current_image_path = None
+            # 清掉"当前图"（走 session 的唯一入口；interface 不再自己存一份）
+            self.manual.set_current_image(None)
             self.image_files = []
             
             self.file_list.blockSignals(True)
@@ -779,22 +930,25 @@ class AnnotationInterface(Interface):
                 progress.setValue(0)
                 progress.show()
                 try:
+                    # 用 repaint() 而不是 processEvents()：只同步重绘这个（不可取消的）
+                    # 进度对话框，**不派发任何输入/定时器/网络事件**，因此不存在重入。
+                    # 进度对话框没有取消按钮，也就不需要事件循环来处理点击。
                     # 步骤1：更新示例库目录
                     progress.setLabelText(f"步骤 (1/3): 更新示例库...")
                     progress.setValue(1)
-                    QApplication.processEvents()
+                    progress.repaint()
                     self.manual.set_non_project_mode(self.output_dir)
 
                     # 步骤2：自动检测已有标注格式并设置（可能较慢，需要扫描大量文件）
                     progress.setLabelText(f"步骤 (2/3): 检测标注格式和类别...")
                     progress.setValue(2)
-                    QApplication.processEvents()
+                    progress.repaint()
                     self._auto_detect_and_set_export_format(dir_path)
 
                     # 步骤3：重新加载当前图片的标注
                     progress.setLabelText(f"步骤 (3/3): 加载当前图片标注...")
                     progress.setValue(3)
-                    QApplication.processEvents()
+                    progress.repaint()
                     self.load_image_annotations()
 
                     InfoBar.success("保存路径已更改", f"非项目模式 - 新路径: {self.output_dir}\n标签将保存到此目录", parent=self)
@@ -916,6 +1070,57 @@ class AnnotationInterface(Interface):
             btn.update()
 
 
+    # ====== 状态所有权：只读投影（真值在 manual.session）======
+    # 没有 setter：任何 `self.current_image_path = ...` 都会立刻 AttributeError，
+    # 而不是悄悄留下第二份真值。改写必须走 session.begin_load() / session.clear()。
+
+    @property
+    def current_image_path(self):
+        return self.manual.current_image_path
+
+    def drain(self, timeout_ms=5000):
+        """确定性排空本界面的后台工作（关闭 / 插件卸载路径）。
+
+        实现 `core.lifecycle.Drainable` 契约，由 ShutdownCoordinator 调用。
+        顺序：先排空图像解码（画布，作废在途代次），再排空缩略图线程池
+        （纯装饰性，放后面）。总预算由调用方给出，内部不叠加超时。
+        """
+        deadline = time.perf_counter() + max(0, int(timeout_ms)) / 1000.0
+        ok = True
+
+        # 先请求取消批量标注：批量可能长达数分钟，直接等必然超时。
+        # cancel_batch() 只置一个标志，服务在每张图之间检查，因此很快返回。
+        try:
+            runner = getattr(self, "_batch_runner", None)
+            if runner is not None and runner.busy():
+                self.auto.cancel_batch()
+                print("[AnnotationInterface] 已请求取消批量标注（关闭流程）")
+        except Exception as e:
+            print(f"[AnnotationInterface] 请求取消批量标注失败: {e}")
+
+        for name, target in (("batch_runner", getattr(self, "_batch_runner", None)),
+                             ("annotation_loader", getattr(self, "_annotation_runner", None)),
+                             ("annotation_writer", getattr(self, "manual", None)),
+                             ("search_scanner", getattr(self, "_search_runner", None)),
+                             ("image_decoder", getattr(self, "draw_area", None)),
+                             ("thumbnails", getattr(self, "_thumb_manager", None)),
+                             ("model_loader", getattr(self, "model_manager", None))):
+            if target is None or not callable(getattr(target, "drain", None)):
+                continue
+            remaining = int((deadline - time.perf_counter()) * 1000.0)
+            if remaining <= 0:
+                print(f"[AnnotationInterface] 排空 {name} 时总预算已耗尽")
+                ok = False
+                continue
+            try:
+                if not target.drain(remaining):
+                    print(f"[AnnotationInterface] {name} 未在 {remaining}ms 内排空")
+                    ok = False
+            except Exception as e:
+                print(f"[AnnotationInterface] 排空 {name} 失败: {e}")
+                ok = False
+        return ok
+
     def init_ui(self):
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setContentsMargins(0, 0, 0, 0)
@@ -979,7 +1184,7 @@ class AnnotationInterface(Interface):
         self.search_box = SearchLineEdit()
         self.search_box.setPlaceholderText("搜索图片(*模糊)/序号跳转… 输入 @ 按类别/大小/状态筛选")
         self.search_box.searchButton.setIcon(AppIcon.SEARCH.icon())
-        self.search_box.textChanged.connect(self.search_images)
+        self.search_box.textChanged.connect(self._on_search_text_changed)
         self.sidebar_layout.addWidget(self.search_box)
 
         # @ 引用补全（在搜索框输入 @ 引用类别 / 大小进行筛选）
@@ -995,6 +1200,27 @@ class AnnotationInterface(Interface):
         self._thumb_manager = ThumbnailManager(parent=self)
         self._thumb_manager.loaded.connect(self._on_thumbnail_loaded)
         self._thumb_item_index = {}  # path -> QListWidgetItem，缩略图完成时 O(1) 定位
+
+        # 批量自动标注的后台运行器。批量**绝不**再在 GUI 线程同步执行 —— 原先必须靠
+        # QApplication.processEvents() 才能让进度条重绘、让取消按钮可点，而那正是
+        # "在状态变更处理器内部重入事件循环"的根源：批量运行期间用户还能触发切图/
+        # 保存/删除，导致界面状态与磁盘状态错乱。任务移出 GUI 线程后事件循环本就空闲，
+        # 既不需要 processEvents，取消按钮也自然可用。
+        self._batch_runner = BackgroundTaskRunner(parent=self, max_threads=1,
+                                                  name="annotation.batch")
+        self._batch_result = None
+
+        # 登记到进程级关闭协调器。为什么必须登记：本项目的关闭链路只有
+        # MainWindow.closeEvent -> sys.exit(app.exec())，全仓没有 aboutToQuit、
+        # 没有线程排空；若不登记，两个 QThreadPool 只能靠 C++ 析构期的隐式无超时
+        # 等待，那发生在解释器收尾阶段 —— 正是退出期
+        # "QThread: Destroyed while thread '' is still running"（56/68 份 crash log）
+        # 的温床。登记后由 ShutdownCoordinator 在对象树析构前显式排空。
+        try:
+            from core.lifecycle import register_drainable
+            register_drainable("annotation.interface", self)
+        except Exception as e:
+            print(f"[AnnotationInterface] 登记关闭排空失败: {e}")
         self.file_list.verticalScrollBar().valueChanged.connect(self._on_file_list_scrolled)
         self.sidebar_layout.addWidget(self.file_list)
         
@@ -1441,9 +1667,33 @@ class AnnotationInterface(Interface):
 
     @action("nav.delete_image_file", description="删除图片文件（不可恢复）。\n- path: 要删除的图片路径\n- 自动处理文件列表和标注缓存\n- 谨慎使用，物理删除不可恢复", category="导航", params={"path": "str"})
     def delete_image_file(self, path: str = "", skip_confirm: bool = False):
+        if not path:
+            return "错误: 路径为空"
+        # skip_confirm 参数此前是死参数：action 描述写着"物理删除不可恢复"，但代码
+        # 从不询问，于是 agent 可以在无确认的情况下删掉用户图片。现在默认必须确认。
+        if not skip_confirm:
+            box = MessageBox("确认删除",
+                             f"将物理删除该图片及其专属标注，删除后不可恢复：\n{path}",
+                             self)
+            if not box.exec():
+                return "已取消删除"
+
+        # 删除前必须等在途解码结束：Windows 上解码进行中 os.remove 会
+        # WinError 32。打开目录会一次性为所有可见行排入缩略图任务，
+        # 因此"刚打开目录就删图"原本必定失败（已实测复现）。
+        # wait_idle 没有副作用（不作废代次、不取消请求）。
+        try:
+            self._thumb_manager.wait_idle(3000)
+            self.draw_area.wait_io_idle(3000)
+        except Exception as e:
+            print(f"[AnnotationInterface] 删除前等待解码空闲失败（继续删除）: {e}")
+
         result, error = self.manual.delete_image_file(path)
         if error:
             return error
+
+        for warning in (result or {}).get("warnings", []):
+            print(f"[AnnotationInterface] delete_image_file: {warning}")
 
         target_item = None
         row = -1
@@ -1463,8 +1713,11 @@ class AnnotationInterface(Interface):
                 new_idx = min(max(0, row), self.file_list.count() - 1)
                 self.load_image(new_idx)
             else:
+                # draw_area.clear() 内部已经 session.clear()（path/标注/像素一起清空）
                 self.draw_area.clear()
-                self.current_image_path = None
+        warnings = (result or {}).get("warnings", [])
+        if warnings:
+            return "success（注意: " + "; ".join(warnings) + "）"
         return "success"
 
 
@@ -1674,6 +1927,25 @@ class AnnotationInterface(Interface):
         self._build_menus(target_menu_bar)
 
 
+    @staticmethod
+    def _menu_label_with_shortcut(label, action_id):
+        """给菜单项文字追加快捷键提示（右侧对齐显示）。
+
+        以 ``\\t`` 分隔：Qt 的菜单样式会把 \\t 之后的部分按快捷键列右对齐绘制，
+        与 ``QAction.setShortcut`` 的显示效果完全一致（视图菜单的 Ctrl+B / Ctrl+\\
+        就是这种显示方式）。这里只负责「显示提示」，真正的按键绑定仍由
+        ShortcutManager 在 setup_global_shortcuts() 里创建的 QShortcut 负责，
+        两者读取同一份快捷键配置（含用户在「设置 → 快捷键」里的自定义键位），
+        因此不会重复绑定导致快捷键歧义。没有配置快捷键时返回原文字。
+        """
+        try:
+            from core.common.shortcut_manager import ShortcutManager
+            key = ShortcutManager.instance().get_key(action_id)
+        except Exception:
+            key = ""
+        return f"{label}\t{key}" if key else label
+
+
     def _build_menus(self, target_menu_bar):
         """创建标注界面的完整菜单"""
         from PySide6.QtWidgets import QMenu
@@ -1725,7 +1997,8 @@ class AnnotationInterface(Interface):
         act_example_all.triggered.connect(lambda: self.one_click_by_all("example"))
         anno_menu.addAction(act_example_all)
 
-        act_example_curr = QAction("基于示例标注当前图片", self)
+        act_example_curr = QAction(
+            self._menu_label_with_shortcut("基于示例标注当前图片", "example_annotate"), self)
         act_example_curr.triggered.connect(lambda: self.one_click_by_current("example"))
         anno_menu.addAction(act_example_curr)
 
@@ -1735,7 +2008,8 @@ class AnnotationInterface(Interface):
         act_text_all.triggered.connect(lambda: self.one_click_by_all("text"))
         anno_menu.addAction(act_text_all)
 
-        act_text_curr = QAction("基于文本标注当前图片", self)
+        act_text_curr = QAction(
+            self._menu_label_with_shortcut("基于文本标注当前图片", "text_annotate"), self)
         act_text_curr.triggered.connect(lambda: self.one_click_by_current("text"))
         anno_menu.addAction(act_text_curr)
 
@@ -2178,51 +2452,156 @@ class AnnotationInterface(Interface):
 
 
     def load_image_annotations(self, strict=False):
+        """请求加载当前图的标注 —— **后台 I/O**，结果带代次校验后才提交。
+
+        原先这里是同步读盘 + 解析（非项目模式还会降级二次扫描），发生在每一次切图的
+        GUI 线程上，是"IO 全在后台"这条要求里最后一块同步 I/O。现在交给
+        `_annotation_runner`：
+
+        * **带代次校验**：结果必须与 `(generation, path)` 都匹配才允许提交，
+          快速切图时过期结果一律丢弃；
+        * **最新优先**：正在跑时只记住最后一个请求，跑完再发起，所以连按方向键
+          不会积压一串读盘任务；
+        * 提交前 `session.is_annotations_loaded` 为 False，因此 `save_current` 会被拒
+          （不会把上一张图的标注写进这张图的文件），交互闸门也是关的。
+        """
         if not self.current_image_path:
             return
+        session = self.manual.session
+        request = {
+            "generation": session.generation,
+            "path": self.current_image_path,
+            "mode": self.draw_area.task_mode,
+            "strict": bool(strict),
+            "output_dir": self.output_dir,
+            "is_non_project_mode": self._is_non_project_mode,
+            "non_project_format": self._non_project_format,
+        }
+        runner = getattr(self, "_annotation_runner", None)
+        if runner is None:
+            # 兜底：runner 尚未建立（极早期调用）时退回同步路径
+            self._apply_loaded_annotations(self._load_annotations_blocking(request), request)
+            return
+        if runner.busy():
+            self._pending_annotation_request = request      # 最新优先
+            return
+        self._start_annotation_load(request)
 
-        mode = self.draw_area.task_mode
+    def _load_annotations_blocking(self, request):
+        """同步装载（在**工作线程**上执行）。"""
+        # 读之前先等这张图在途的写入落盘：标注保存现在是异步的，若不等，
+        # "切走再切回同一张图"时读可能跑在写之前 -> 用户会看到刚改的标注消失。
+        if not self.manual.wait_for_pending_writes(request["path"], 5000):
+            print("[AnnotationInterface] 等待在途标注写入超时: %s" % request["path"])
+        return self.manual.load_annotations_for_image(
+            request["path"], request["mode"], request["strict"],
+            output_dir=request["output_dir"],
+            is_non_project_mode=request["is_non_project_mode"],
+            non_project_format=request["non_project_format"])
 
-        res, detected_format = self.manual.load_annotations_for_image(
-            self.current_image_path, mode, strict,
-            output_dir=self.output_dir,
-            is_non_project_mode=self._is_non_project_mode,
-            non_project_format=self._non_project_format
+    def _start_annotation_load(self, request):
+        runner = self._annotation_runner
+        started = runner.start(
+            lambda: self._load_annotations_blocking(request),
+            on_result=lambda loaded: self._on_annotations_loaded(request, loaded),
+            on_error=lambda message: self._on_annotations_load_failed(request, message),
         )
+        if not started:
+            self._pending_annotation_request = request
+        return started
+
+    def _on_annotations_loaded(self, request, loaded):
+        try:
+            self._apply_loaded_annotations(loaded, request)
+        except Exception as e:
+            print(f"[AnnotationInterface] 提交标注装载结果失败: {e}")
+            traceback.print_exc()
+        finally:
+            self._drain_pending_annotation_request()
+
+    def _on_annotations_load_failed(self, request, message):
+        print(f"[AnnotationInterface] 标注装载异常: {request['path']}: {message}")
+        self.manual.session.mark_annotations_unloaded()
+        self._drain_pending_annotation_request()
+
+    def _drain_pending_annotation_request(self):
+        pending = self._pending_annotation_request
+        self._pending_annotation_request = None
+        if pending is not None:
+            self._start_annotation_load(pending)
+
+    def _apply_loaded_annotations(self, loaded, request):
+        """把后台装载结果提交到 session —— **代次与路径双重校验**通过才落地。"""
+        session = self.manual.session
+        path = request["path"]
+        generation = request["generation"]
+        if generation != session.generation or path != session.path:
+            print(f"[AnnotationInterface] 丢弃过期标注装载结果: {os.path.basename(path)} "
+                  f"(代次 {generation} != {session.generation})")
+            return
+
+        res, detected_format = loaded if isinstance(loaded, tuple) else (loaded, None)
+        res = res or {}
         if detected_format:
             self._non_project_format = detected_format
-        
-        if res['status'] == 'success':
-            print(f"[Debug] Successfully loaded {len(res['annotations'])} annotations")
-            
-            annotations = res['annotations']
-            if mode == 'obb':
+
+        status = res.get("status")
+        if status == "success":
+            annotations = res.get("annotations") or []
+            if request["mode"] == "obb":
                 for ann in annotations:
                     self.manual.convert_single_ann_to_obb(ann)
-
-            self.manual.set_current_annotations(annotations)
+            # for_path + expected_generation 双重校验：这批标注必须属于**当前**图。
+            # 这是审计 D2/D3 那类"把 A 图标注装进 B 图当前状态、随后被自动保存
+            # 写进 B 图文件"的静默数据损坏的直接拦截点。
+            if not self.manual.set_current_annotations(
+                    annotations, for_path=path, expected_generation=generation):
+                print("[AnnotationInterface] 标注装载结果不属于当前图，已丢弃")
+                return
             self._add_new_categories_from_annotations(annotations)
             self.draw_area.update()
             self.refresh_label_list()
-            self.status_label.setText(f"已加载现有标注: {len(res['annotations'])} 个")
-        elif res['status'] == 'error':
-            # 加载失败（如文件损坏、编码错误），不清空已有标注以防 auto_save 覆盖原始数据
-            print(f"[Warning] 标注加载失败: {res.get('message', '未知错误')}，保留当前标注不变")
+            self.status_label.setText(f"已加载现有标注: {len(annotations)} 个")
+        elif status == "error":
+            # 装载失败：标记为"未成功装载" -> 禁止保存，避免把空标注覆盖到那张
+            # 可恢复的坏文件上（审计 D8）。内存里的标注保持为空。
+            session.mark_annotations_unloaded()
+            print(f"[Warning] 标注加载失败: {res.get('message', '未知错误')}")
             self.status_label.setText(f"标注加载失败: {res.get('message', '未知错误')}")
+            self.draw_area.update()
+            self.refresh_label_list()
         else:
-            self.manual.set_current_annotations([])
+            self.manual.set_current_annotations([], for_path=path,
+                                                expected_generation=generation)
             self.draw_area.update()
             self.refresh_label_list()
 
 
     @action("nav.switch_image", description="按方向切换图片。\n- direction：1=下一张，-1=上一张\n- 无图片时无操作\n- 如果 auto_save_enabled 为 True，切换前自动保存当前标注\n- 跳过被筛选隐藏的图片，只加载可见图片\n- 已处于第一张/最后一张可见图片时无操作", category="导航", params={"direction": "int"}, scope="ui")
+    def visible_image_indices(self):
+        """当前**可见**（未被筛选隐藏）的图片下标集合 —— 导航的唯一真值来源。
+
+        审计阶段 3e：可见性原先有两个来源 —— 界面从 `file_list` 的隐藏状态推导
+        （`switch_image`），而 service 侧的 `_navigate_ai` 直接假设"全部可见"
+        （`range(len(image_files))`）。两条来源在启用筛选后必然不一致：agent 走
+        `next_image` 会跳到**被筛选隐藏**的图片上，而界面按方向键会正确跳过。
+
+        这里统一以 `file_list` 的实际隐藏状态为准，并提供给 service —— 它是界面上
+        筛选结果的可视真值，而 `manual.file_visibility` 只是计算中间产物。
+        """
+        try:
+            return {i for i in range(self.file_list.count())
+                    if not self.file_list.item(i).isHidden()}
+        except Exception:
+            return set(range(len(self.image_files)))
+
     def switch_image(self, direction: int = 1):
         if self.auto_save_enabled:
             self.save_current(silent=True)
 
         current_idx = self.file_list.currentRow()
-        visible_indices = {i for i in range(self.file_list.count()) if not self.file_list.item(i).isHidden()}
-        target, error = self.manual.navigate_relative(current_idx, direction, visible_indices)
+        target, error = self.manual.navigate_relative(
+            current_idx, direction, self.visible_image_indices())
         if error:
             return error
         if target is not None:
@@ -2402,6 +2781,39 @@ class AnnotationInterface(Interface):
 
     
 
+    # ---- 列表重建的"发射栈安全"闸门（审计 D16）----
+
+    def _begin_list_rebuild(self):
+        """进入列表重建区：告知派发器"此刻正在重建列表"。
+
+        重建会销毁并重建列表行（及其上的复选框/探测控件）。若这个动作发生在某个
+        子控件**正在发射信号**的调用栈里（例如 `stateChanged` 的回调里触发重建），
+        就会在发射栈上销毁发起者 —— Qt 下这是未定义行为（崩溃或静默错乱）。
+        """
+        self._list_rebuilding = True
+
+    def _end_list_rebuild(self):
+        self._list_rebuilding = False
+
+    def request_list_rebuild(self, fn, from_signal=False):
+        """请求重建列表；若当前正处于"子控件发射栈"上则改为**延后**执行。
+
+        为什么不能靠 `self.sender()` 判断：在 lambda / 嵌套辅助函数里调用时
+        `sender()` 返回 None（Qt 只保证在**直接**槽函数里有效），实测因此漏判 ——
+        T4 显示重建仍在发射栈内同步执行。
+
+        因此改为**显式声明**：凡是从信号槽（按钮 clicked、列表行控件 stateChanged、
+        快捷键触发等）里发起的重建，调用方传 `from_signal=True`，这里就把重建推迟到
+        事件循环的下一轮 —— 那时发射栈已经展开完毕，销毁发起控件是安全的。
+        """
+        if self._list_rebuilding:
+            # 已经在一个重建流程里 —— 直接执行即可（不会再嵌套销毁）
+            return fn()
+        if from_signal:
+            QTimer.singleShot(0, fn)
+            return None
+        return fn()
+
     def load_directory_images(self, dir_path):
         """Loads all images from a directory (or project root) and updates UI."""
         try:
@@ -2409,18 +2821,41 @@ class AnnotationInterface(Interface):
             files, last_idx = self.manual.load_directory(dir_path)
             self.image_files = files
 
-            self.file_list.blockSignals(True)
-            while self.file_list.count() > 0:
-                self.file_list.takeItem(0)
-            self.file_list.blockSignals(False)
-            for f in self.image_files:
-                item = QListWidgetItem(os.path.basename(f))
-                item.setData(Qt.UserRole, f)
-                item.setSizeHint(QSize(0, 52))
-                self.file_list.addItem(item)
-            self._populate_file_thumbnails()
+            # 重建列表时**必须屏蔽所有信号**（审计 D16 第一部分）：
+            # 原先只屏蔽了 file_list，而 `takeItem`/`addItem` 期间若有探测器或
+            # 复选框的 stateChanged 正在发射，就会在**发射栈上销毁发起控件**；
+            # `_populate_file_thumbnails()` 也会触发 itemChanged/滚动等信号。
+            # 这里统一把 file_list 与 search_box 都关掉，重建完再打开。
+            self._begin_list_rebuild()
+            try:
+                # 信号必须**贯穿整个重建过程**保持屏蔽（审计 D16）：原先只在
+                # `takeItem` 循环前后屏蔽，而 `addItem` 之后的
+                # `_populate_file_thumbnails()` 会设置 item 数据并触发
+                # `itemChanged`（实测 5 行 = 5 次），也就是说重建期间仍有信号
+                # 打到外部 —— 那正是"在发射栈上重建"的入口。
+                self.file_list.blockSignals(True)
+                try:
+                    while self.file_list.count() > 0:
+                        self.file_list.takeItem(0)
+                    for f in self.image_files:
+                        item = QListWidgetItem(os.path.basename(f))
+                        item.setData(Qt.UserRole, f)
+                        item.setSizeHint(QSize(0, 52))
+                        self.file_list.addItem(item)
+                    self._populate_file_thumbnails()
 
-            self.search_box.clear()
+                    # 清空搜索框必然会发射 textChanged；不屏蔽就会在"目录刚重建、
+                    # currentRow 尚未确定"时启动一次搜索/去抖，造成状态被并发改写
+                    # （审计 D16：原先这里没有 blockSignals）。
+                    self.search_box.blockSignals(True)
+                    try:
+                        self.search_box.clear()
+                    finally:
+                        self.search_box.blockSignals(False)
+                finally:
+                    self.file_list.blockSignals(False)
+            finally:
+                self._end_list_rebuild()
 
             self.dir_label.setText(os.path.basename(dir_path))
             self.dir_label.setToolTip(dir_path)
@@ -2449,6 +2884,8 @@ class AnnotationInterface(Interface):
         """清空当前项目相关的路径、图片和画布显示，用于项目被删除后恢复到空状态。"""
         self.output_dir = ""
         self.manual.clear_all()
+        # 项目被清空：派生签名缓存必须作废，否则"清空后再打开同签名数据"会被跳过（D33）
+        self.reset_annotations_refresh_state()
         self.image_files = self.manual.image_files
         # 使用 takeItem 逐个删除，避免 QFluentWidgets ListWidget 的 clear() 崩溃问题
         self.file_list.blockSignals(True)
@@ -2489,12 +2926,16 @@ class AnnotationInterface(Interface):
                     self.file_list.setCurrentRow(index)
                     return
 
-                self.current_image_path = new_image_path
+                # 路径由 service.set_current_image_with_split() 走 session 提交，
+                # interface 不再自己赋值一份（唯一状态所有者）
                 split = self.manual.set_current_image_with_split(new_image_path)
                 norm_path = os.path.normpath(self.current_image_path)
 
                 self.manual.clear_undo_history()
                 self.manual.clear_visibility_state()
+                # 标注真值已被整体替换（换图）：派生出来的"上次刷新签名"必须作废，
+                # 否则新图标注恰好同签名时刷新会被跳过（D33）
+                self.reset_annotations_refresh_state()
 
                 # 安全地调用 set_image
                 try:
@@ -2531,11 +2972,9 @@ class AnnotationInterface(Interface):
                     print(f"[AnnotationInterface] Error in load_image_annotations: {e}")
                     traceback.print_exc()
 
-                try:
-                    self.refresh_label_list()
-                except Exception as e:
-                    print(f"[AnnotationInterface] Error in refresh_label_list: {e}")
-                    traceback.print_exc()
+                # 这里**不再**重复调用 refresh_label_list()：标注装载现在在后台完成，
+                # 由 _apply_loaded_annotations 在提交后刷新一次即可。原先同步路径下
+                # 这里会再重建一遍列表（每次切图两次全量重建，20 条标注约 240ms）。
 
                 # 更新难样本标记状态
                 self._update_hard_sample_checkbox()
@@ -2629,7 +3068,9 @@ class AnnotationInterface(Interface):
                 )
                 draw_area.batch_selected_points = []
 
-            self.refresh_label_list()
+            # 经延后闸门重建列表（审计 D16）：本函数由 label_list 上的删除按钮
+            # 触发，直接重建会在**发射栈上销毁发起控件**
+            self.request_list_rebuild(self.refresh_label_list, from_signal=True)
             draw_area.update()
 
         elif draw_area.selected_index != -1:
@@ -2641,7 +3082,7 @@ class AnnotationInterface(Interface):
                 return err
             self.manual.set_current_annotations(new_anns)
             draw_area.selected_index = -1
-            self.refresh_label_list()
+            self.request_list_rebuild(self.refresh_label_list, from_signal=True)
 
         elif draw_area.hover_index != -1:
             new_anns, new_hidden, err = self.manual.delete_annotation(
@@ -2652,7 +3093,7 @@ class AnnotationInterface(Interface):
                 return err
             self.manual.set_current_annotations(new_anns)
             draw_area.hover_index = -1
-            self.refresh_label_list()
+            self.request_list_rebuild(self.refresh_label_list, from_signal=True)
 
     @action("edit.select_annotation", description="按方向选择标注并自动聚焦（下键/上键）。\n- direction：1=下一个，-1=上一个\n- 无标注时无操作\n- 循环选择：最后一个之后回到第一个，反之亦然\n- 选中后自动聚焦放大标注", category="标注", params={"direction": "int"}, scope="ui")
     def select_annotation(self, direction: int = 1):
@@ -3138,7 +3579,8 @@ class AnnotationInterface(Interface):
                         return
                     self.manual.set_current_annotations(new_annotations)
                     self._touch_recent_category(new_cat)
-                    self.refresh_label_list()
+                    # 本函数由类别按钮/双击信号驱动，重建必须延后（D16）
+                    self.request_list_rebuild(self.refresh_label_list, from_signal=True)
                     self.draw_area.update()
                     self.save_current(silent=True)
                     InfoBar.success("类别已修改", f"类别已切换为 '{new_cat}'", duration=1500, parent=self)
@@ -3383,17 +3825,38 @@ class AnnotationInterface(Interface):
             progress.setWindowTitle("批量处理中")
             progress.show()
 
+            # 把"取消"按钮接到真正的取消逻辑（审计 D9 余项）：原先它没连任何东西，
+            # 按下去毫无作用。这里用一个 threading.Event 传递取消意图，服务在
+            # **图片边界**检查并提前收尾 —— 因此不会打断正在写盘的那张图，
+            # 已落盘数据始终完整。
+            cancel_event = threading.Event()
+
+            def _request_cancel():
+                cancel_event.set()
+                progress.setLabelText("正在取消…（将在当前图片处理完后停止）")
+
+            progress.canceled.connect(_request_cancel)
+
             def progress_callback(processed, total):
                 progress.setValue(processed)
-                progress.setLabelText(f"正在处理 ({processed+1}/{total}): {os.path.basename(image_paths[processed])}")
-                QApplication.processEvents()
+                if cancel_event.is_set():
+                    progress.setLabelText("正在取消…（将在当前图片处理完后停止）")
+                else:
+                    progress.setLabelText(
+                        f"正在处理 ({processed+1}/{total}): "
+                        f"{os.path.basename(image_paths[min(processed, len(image_paths)-1)])}")
+                # 只重绘本控件，不派发事件（见 update_save_path 的说明），
+                # 避免在批量进行中重入事件循环。
+                progress.repaint()
 
             result = self.auto.convert_all_with_ai(
                 image_paths, source_mode, target_mode,
-                progress_callback=progress_callback
+                progress_callback=progress_callback,
+                cancel_event=cancel_event
             )
 
-            progress.setValue(len(image_paths))
+            if not cancel_event.is_set():
+                progress.setValue(len(image_paths))
 
         except Exception as e:
             if settings.DEBUG:
@@ -3405,9 +3868,18 @@ class AnnotationInterface(Interface):
             self.unsetCursor()
             if progress is not None:
                 progress.close()
-                QApplication.processEvents()
+                # 同上：close() 已足够，不再 processEvents()
 
         self.load_image_annotations()
+
+        # 取消路径必须给出明确反馈，且汇报的是**实际处理数**而不是计划总数
+        if result.get("cancelled"):
+            done = result.get("processed_count", 0)
+            InfoBar.warning(
+                "已取消全量转换",
+                f"已在第 {done}/{result.get('total', 0)} 张停止（已处理的标注均已完整落盘）",
+                parent=self)
+            return
 
         empty_results = result.get("empty_results_count", 0)
         images_with_empty = result.get("images_with_empty_results", 0)
@@ -3430,6 +3902,9 @@ class AnnotationInterface(Interface):
             category="标注", params={"keyword": "str"}, scope="ui")
     @Slot(str)
     def search_images(self, keyword: str = None):
+        # 任何**显式**搜索都作废在途的后台搜索（递增代次），避免旧结果回来覆盖新状态
+        self._search_debounce.stop()
+        self._search_generation += 1
         if keyword is None:
             search_text = self.search_box.text().strip()
         else:
@@ -3455,6 +3930,84 @@ class AnnotationInterface(Interface):
             non_project_format=self._non_project_format
         )
         self._apply_file_visibility(visibility_result["files"])
+
+    def _on_search_text_changed(self, text):
+        """搜索框每次击键：只**置脏 + 去抖**，真正的扫描在后台线程进行（审计 D15）。
+
+        原先 `textChanged` 直接连到 `search_images`，于是每次击键都在 GUI 线程做一次
+        全量扫描；一旦启用了类别/尺寸/标注状态筛选，扫描会**逐图读盘解析标注**
+        （`get_cached_annotations`）—— 目录大一点就是秒级到分钟级的冻结。
+        """
+        stripped = (text or "").strip()
+        # 纯数字是"跳转到第 N 张"，属于导航而非扫描，仍走同步路径保持原有手感
+        if stripped.isdigit():
+            self.search_images(stripped)
+            return
+        self._search_debounce.start(self.SEARCH_DEBOUNCE_MS)
+
+    def _on_search_debounce_timeout(self):
+        """去抖到点：把当前搜索文本交给后台扫描。"""
+        search_text = self.search_box.text().strip()
+        keyword_text = self._apply_search_tokens(search_text)
+        if keyword_text.isdigit():
+            return
+        self._request_background_search(keyword_text)
+
+    def _request_background_search(self, keyword_text):
+        """提交一次**后台**搜索：GUI 线程只取快照，扫描在工作线程。
+
+        代次守卫 + 最新优先：正在跑时新请求只覆盖待发请求；结果代次不匹配则丢弃。
+        """
+        self._search_generation += 1
+        request = {
+            "generation": self._search_generation,
+            "keyword": keyword_text,
+            "output_dir": self.output_dir,
+            "is_non_project_mode": self._is_non_project_mode,
+            "non_project_format": self._non_project_format,
+            "snapshot": self.manual.search_snapshot(),
+        }
+        if self._search_runner.busy():
+            self._pending_search_request = request      # 最新优先
+            return
+        self._start_search(request)
+
+    def _start_search(self, request):
+        started = self._search_runner.start(
+            lambda: self.manual.search_images(
+                request["keyword"],
+                output_dir=request["output_dir"],
+                is_non_project_mode=request["is_non_project_mode"],
+                non_project_format=request["non_project_format"],
+                snapshot=request["snapshot"],
+                apply_state=False,          # 状态由 GUI 线程在提交结果时回写
+            ),
+            on_result=lambda result: self._on_search_done(request, result),
+            on_error=lambda message: print(f"[AnnotationInterface] 后台搜索失败: {message}"),
+        )
+        if not started:
+            self._pending_search_request = request
+
+    def _on_search_done(self, request, result):
+        """后台搜索完成（GUI 线程）：代次仍匹配才应用。"""
+        try:
+            if request["generation"] != self._search_generation:
+                print("[AnnotationInterface] 丢弃过期搜索结果（代次 %d != %d）"
+                      % (request["generation"], self._search_generation))
+                return
+            files = (result or {}).get("files") or []
+            self.manual.file_visibility = files
+            self._apply_file_visibility(files)
+        except Exception:
+            traceback.print_exc()
+        finally:
+            self._drain_pending_search()
+
+    def _drain_pending_search(self):
+        pending = self._pending_search_request
+        self._pending_search_request = None
+        if pending is not None:
+            self._start_search(pending)
 
     # ---- @ 引用（搜索框内引用类别/大小进行筛选） ----
 
@@ -3746,13 +4299,8 @@ class AnnotationInterface(Interface):
         search_text = " ".join(search_text.split())
         if search_text.isdigit():
             search_text = ""
-        visibility_result = manual.search_images(
-            search_text,
-            output_dir=self.output_dir,
-            is_non_project_mode=self._is_non_project_mode,
-            non_project_format=self._non_project_format,
-        )
-        self._apply_file_visibility(visibility_result["files"])
+        # 筛选条件变化后的重算同样是"逐图读盘"级别的开销 -> 走后台（审计 D15）
+        self._request_background_search(search_text)
 
     def _get_cached_annotations(self, image_path):
         return self.manual.get_cached_annotations(
@@ -4065,13 +4613,36 @@ class AnnotationInterface(Interface):
     # Update methods
     # ============================================================
 
+    @staticmethod
+    def _clear_list_widget(list_widget):
+        """清空 QListWidget，并**销毁**通过 setItemWidget 挂上去的子控件。
+
+        Qt 语义：`takeItem()` 只把 item 从列表里摘下来，**不会销毁** itemWidget
+        —— 那些控件仍是 viewport 的子对象，会一直常驻。原先 label_list /
+        category_list 都用 `while count(): takeItem(0)` 清空，于是每次重建都泄漏
+        「每个 item 6 个控件」。实测（tests/annotation/test_label_list_leak.py，
+        20 个标注）：单次 refresh_label_list 泄漏 120 个控件，重建 30 次后
+        viewport 子控件从 120 涨到 3720 —— 而 refresh_label_list 每次切图都会
+        被调用一次，界面因此逐步变慢直到卡死。
+
+        其它列表（version_list / prompt_library_dialog / example_selection_dialog）
+        用的是 `clear()`，Qt 会连同 indexWidget 一起销毁，所以不受影响。
+        """
+        while list_widget.count() > 0:
+            item = list_widget.item(0)
+            widget = list_widget.itemWidget(item)
+            if widget is not None:
+                list_widget.removeItemWidget(item)
+                widget.setParent(None)
+                widget.deleteLater()
+            list_widget.takeItem(0)
+
     def refresh_label_list(self):
         # 重建标志：防止旧复选框销毁/新复选框创建时 stateChanged 信号干扰 hidden_indices
         self._is_rebuilding_labels = True
         try:
             self.label_list.blockSignals(True)
-            while self.label_list.count() > 0:
-                self.label_list.takeItem(0)
+            self._clear_list_widget(self.label_list)
             self.label_list.blockSignals(False)
 
             for i, ann in enumerate(self.draw_area.annotations):
@@ -4141,6 +4712,30 @@ class AnnotationInterface(Interface):
             return "错误: 当前没有打开任何图片"
 
         task_mode = self.draw_area.task_mode
+
+        if silent:
+            # 自动保存路径（全部调用方都不使用返回值）：**标注文件写入在后台**。
+            # GUI 线程只做状态更新（切分记录 + 标注缓存），不再被
+            # imread + json 写盘阻塞 —— 这是"拖一次鼠标写一次盘"的热路径。
+            res = self.manual.schedule_save_current(
+                self.draw_area.annotations, self.current_image_path, task_mode
+            )
+            if res.get("status") == "error":
+                return f"错误: 保存失败: {res.get('message', '未知错误')}"
+            if not self._is_non_project_mode:
+                split_idx = self.split_combo.currentIndex()
+                split = ["train", "val", "test"][split_idx]
+                norm_path = os.path.normpath(self.current_image_path)
+                self.manual.set_image_split(norm_path, split)
+                self.save_dataset_splits()
+            self.annotation_cache[self.current_image_path] = copy.deepcopy(self.draw_area.annotations)
+            return "queued"
+
+        # 显式保存（Ctrl+S / agent action）：调用方需要真实结果。
+        # 先等同一路径的在途自动保存落盘，保证**写入顺序**（否则排队中的旧快照
+        # 可能后落地，把这次显式保存覆盖掉）。
+        self.manual.wait_for_pending_writes(self.current_image_path, 5000)
+
         res = self.manual.save_current(
             self.draw_area.annotations, self.current_image_path, task_mode
         )
@@ -4161,6 +4756,27 @@ class AnnotationInterface(Interface):
                 return "success"
         else:
             return f"错误: 保存失败: {res.get('message', '未知错误')}"
+
+    def _on_background_save_failed(self, path, message):
+        """后台自动保存失败（**在写入线程上被调用**）：marshal 回 GUI 线程再提示。
+
+        Qt 控件只能在 GUI 线程访问，所以这里不能直接操作 status_label / InfoBar。
+        """
+        print(f"[AnnotationInterface] 后台自动保存失败: {path}: {message}")
+
+        def _show():
+            try:
+                self.status_label.setText(f"自动保存失败: {message}")
+                InfoBar.error("自动保存失败",
+                              f"{os.path.basename(path)}: {message}", parent=self)
+            except Exception:
+                traceback.print_exc()
+
+        try:
+            run_on_main(_show)
+        except Exception:
+            # 应用正在关闭时 dispatch 会被拒（这是设计好的闸门），此时只需记录日志
+            print("[AnnotationInterface] 无法把保存失败提示投递到主线程（可能正在关闭）")
 
     def _save_current_ui(self):
         result = self.save_current(silent=False)
@@ -4199,8 +4815,7 @@ class AnnotationInterface(Interface):
 
     def refresh_category_list(self):
         self.category_list.blockSignals(True)
-        while self.category_list.count() > 0:
-            self.category_list.takeItem(0)
+        self._clear_list_widget(self.category_list)
         self.category_list.blockSignals(False)
         recent = [c for c in self._recent_categories if c in self.categories]
         remaining = [c for c in self.categories if c not in recent]
@@ -4850,9 +5465,16 @@ class AnnotationInterface(Interface):
 
         menu.exec(QCursor.pos())
 
-    @action("batch.one_click_by_all_ui", description="按模式对全部图片进行批量自动标注并刷新界面。\n- mode: 标注模式，text=基于文本 / example=基于示例 / model=基于普通模型\n- text: mode=text 时的描述文本（可选），留空则使用提示词库中选中的提示词\n- 执行成功后自动刷新类别状态并弹出结果提示", category="自动标注", params={"mode": "str", "text": "str"}, scope="ui")
+    @action("batch.one_click_by_all_ui", description="按模式对全部图片进行批量自动标注（**立即返回，任务在后台线程执行**）。\n- mode: 标注模式，text=基于文本 / example=基于示例 / model=基于普通模型\n- text: mode=text 时的描述文本（可选），留空则使用提示词库中选中的提示词\n- 本方法只负责启动：返回「已在后台开始」。进度由进度对话框展示，完成/取消由界面提示\n- 需要**同步拿到处理结果**（processed/total/errors）时请用 service 层的 batch.one_click_by_all\n- 已有批量在跑时返回错误，不会并发执行", category="自动标注", params={"mode": "str", "text": "str"}, scope="ui")
     def one_click_by_all(self, mode: str = "", text: str = "", selected_examples: list = None):
-        """UI 包装：按模式批量标注全部图片，成功后刷新界面并提示结果。"""
+        """UI 包装：把批量标注交给**后台线程**执行并立即返回。
+
+        刻意不再同步执行：批量可能是成百上千张图，同步跑就必须靠 processEvents
+        才能重绘进度条、让取消按钮可点，而那会在状态变更处理器内部重入事件循环
+        （用户在批量进行中还能切图/保存/删除 -> 界面与磁盘状态错乱）。
+        现在批量跑在 BackgroundTaskRunner 上：进度走 annotation:batch_progress 事件，
+        取消走 `auto.cancel_batch()` 标志，结果由 `_on_batch_job_finished` 在 GUI 线程提示。
+        """
         mode = (mode or "").strip()
         if mode == "text" and not text:
             selected_prompts = self.get_selected_prompts_from_library()
@@ -4860,15 +5482,51 @@ class AnnotationInterface(Interface):
                 InfoBar.warning("提示", "提示词库中没有选中的提示词，请先添加并勾选提示词", parent=self)
                 return "错误: 提示词库中没有选中的提示词，请先添加并勾选提示词"
             text = ", ".join(selected_prompts)
-        result = self.auto.one_click_by_all(
-            mode=mode, text=text, selected_examples=selected_examples,
+
+        if self._batch_runner.busy():
+            InfoBar.warning("提示", "已有批量标注正在进行中", parent=self)
+            return "错误: 已有批量标注正在进行中，请等待结束或先取消"
+
+        total = len(self.manual.image_files or [])
+        started = self._batch_runner.start(
+            lambda: self.auto.one_click_by_all(
+                mode=mode, text=text, selected_examples=selected_examples),
+            on_result=self._on_batch_job_finished,
+            on_error=self._on_batch_job_failed,
         )
-        if isinstance(result, dict) and result.get('status') == 'success':
+        if not started:
+            return "错误: 已有批量标注正在进行中，请等待结束或先取消"
+        return f"批量标注已在后台开始（共 {total} 张图片），进度见进度对话框"
+
+    def _on_batch_job_finished(self, result):
+        """批量任务结束（GUI 线程）：刷新类别状态并提示结果。"""
+        self._batch_result = result
+        try:
             self._refresh_category_state()
-            InfoBar.success("批量标注完成", f"共处理 {result.get('total', 0)} 张图片", parent=self)
+        except Exception as e:
+            print(f"[AnnotationInterface] 批量完成后刷新类别状态失败: {e}")
+        if isinstance(result, dict) and result.get("status") == "success":
+            total = result.get("total", 0)
+            processed = result.get("processed", 0)
+            errors = result.get("errors") or []
+            if result.get("canceled"):
+                InfoBar.warning("批量标注已取消",
+                                f"已处理 {processed}/{total} 张图片", parent=self)
+            elif errors:
+                InfoBar.warning("批量标注完成（部分失败）",
+                                f"共 {total} 张，失败 {len(errors)} 张；详见控制台日志",
+                                parent=self)
+                for err in errors[:10]:
+                    print(f"[AnnotationInterface] 批量标注失败项: {err}")
+            else:
+                InfoBar.success("批量标注完成", f"共处理 {total} 张图片", parent=self)
         elif isinstance(result, str) and result.startswith("错误"):
             InfoBar.error("批量标注失败", result, parent=self)
-        return result
+
+    def _on_batch_job_failed(self, message):
+        """批量任务抛异常（GUI 线程）。"""
+        print(f"[AnnotationInterface] 批量标注异常: {message}")
+        InfoBar.error("批量标注失败", message, parent=self)
 
     @action("batch.one_click_by_current_ui", description="按模式对当前图片进行自动标注并刷新画布。\n- mode: 标注模式，text=基于文本 / example=基于示例 / model=基于普通模型\n- text: mode=text 时的描述文本，留空则使用提示词库中选中的提示词\n- 数据由 service 层写入磁盘，成功后自动重载并刷新画布/列表/类别", category="自动标注", params={"mode": "str", "text": "str"}, scope="ui")
     def one_click_by_current(self, mode: str = "", text: str = ""):

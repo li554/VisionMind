@@ -87,9 +87,16 @@ class GetStateTool(Tool):
                                 mode_names = {0: "edit", 1: "rect", 2: "polygon", 3: "sam", 4: "obb", 5: "roi", 6: "ai_rect"}
                                 state["drawing_mode_name"] = mode_names.get(draw_area.mode, "unknown")
                                 state["task_mode"] = getattr(draw_area, 'task_mode', '')
-                                if draw_area.original_image_size and not draw_area.original_image_size.isNull():
+                                # 像素是否已提交（与当前图同代次）。未提交时下面的
+                                # image_width/height 会被 session 清成 0，agent 若
+                                # 据此生成坐标就会错标 —— 因此显式暴露该标志。
+                                committed = bool(getattr(draw_area, 'is_committed', True))
+                                state["canvas_committed"] = committed
+                                if committed and draw_area.original_image_size and not draw_area.original_image_size.isNull():
                                     state["image_width"] = draw_area.original_image_size.width()
                                     state["image_height"] = draw_area.original_image_size.height()
+                                elif not committed:
+                                    state["canvas_loading"] = True
                                 if draw_area.sam_points:
                                     state["sam_point_count"] = len(draw_area.sam_points)
                             # 未加载项目时需要引导 Agent 先加载,而不是盲目跳界面

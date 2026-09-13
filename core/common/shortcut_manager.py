@@ -1,11 +1,9 @@
 """
 快捷键管理器
 - 维护所有快捷键的默认绑定和自定义绑定
-- 自定义绑定存储在 core.json 的 shortcuts 配置中
+- 自定义绑定存储在全局配置 core.json 的 shortcuts 条目中（经 settings 读写）
 - 提供查询、修改、重置接口
 """
-import json
-import os
 from typing import Dict, List, Tuple, Optional, Callable
 from dataclasses import dataclass, field
 from PySide6.QtCore import QObject, Signal, Qt
@@ -84,7 +82,6 @@ class ShortcutManager(QObject):
     def __init__(self):
         super().__init__()
         self._shortcuts: Dict[str, ShortcutInfo] = {}
-        self._config_path = ""
         self._load_defaults()
         self._load_custom()
 
@@ -109,57 +106,30 @@ class ShortcutManager(QObject):
             )
 
     def _load_custom(self):
-        """从 core.json 加载自定义快捷键"""
+        """从全局配置读取自定义快捷键（走 settings，兼容测试状态隔离）"""
         try:
-            from core.common.config import Config
-            self._config_path = os.path.join(Config.ROOT_DIR, "core", "core.json")
-            if not os.path.exists(self._config_path):
-                return
-            with open(self._config_path, 'r', encoding='utf-8-sig') as f:
-                data = json.load(f)
-            if isinstance(data, list):
-                for item in data:
-                    if item.get("key") == "shortcuts" and isinstance(item.get("value"), dict):
-                        custom_map = item["value"]
-                        for action_id, key in custom_map.items():
-                            if action_id in self._shortcuts:
-                                self._shortcuts[action_id].custom_key = key
+            from core.common.settings import settings as core_settings
+            custom_map = core_settings.get("shortcuts")
+            if isinstance(custom_map, dict):
+                for action_id, key in custom_map.items():
+                    if action_id in self._shortcuts and key:
+                        self._shortcuts[action_id].custom_key = key
         except Exception as e:
             print(f"[ShortcutManager] 加载自定义快捷键失败: {e}")
 
     def _save_custom(self):
-        """保存自定义快捷键到 core.json"""
-        custom_map = {}
-        for action_id, info in self._shortcuts.items():
-            if info.custom_key:
-                custom_map[action_id] = info.custom_key
+        """保存自定义快捷键到全局配置
 
+        必须经 `settings.set()`：它按 schema 更新 `shortcuts` 条目的 value（原子 +
+        加锁 + 保留 core.json 的 schema 元数据）。早期版本在这里直接
+        `open(core.json,'w')` 整文件重写，既不原子也不加锁，且在 schema 已缺失时会把
+        纯值条目写回文件 —— core.json 元数据一旦丢失，设置界面启动即崩。
+        """
+        custom_map = {action_id: info.custom_key
+                      for action_id, info in self._shortcuts.items() if info.custom_key}
         try:
-            if not os.path.exists(self._config_path):
-                return
-            with open(self._config_path, 'r', encoding='utf-8-sig') as f:
-                data = json.load(f)
-
-            # 找到或创建 shortcuts 配置项
-            found = False
-            if isinstance(data, list):
-                for item in data:
-                    if item.get("key") == "shortcuts":
-                        item["value"] = custom_map
-                        found = True
-                        break
-                if not found:
-                    data.append({
-                        "key": "shortcuts",
-                        "title": "快捷键配置",
-                        "type": "object",
-                        "default": {},
-                        "value": custom_map,
-                        "description": "自定义快捷键映射"
-                    })
-
-            with open(self._config_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
+            from core.common.settings import settings as core_settings
+            core_settings.set("shortcuts", custom_map)
         except Exception as e:
             print(f"[ShortcutManager] 保存自定义快捷键失败: {e}")
 

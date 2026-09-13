@@ -5,6 +5,48 @@ from PySide6.QtCore import QObject, Signal
 from .config import Config
 from .settings import settings
 
+
+# ====== 自动标注规则 schema ======
+# 写入 project_info.json 的 rules_schema 字段：
+#   1 = 旧版「相对规则」：area/width/height/aspect 是相对参考示例平均值的偏差比例，
+#       center_range 是相对示例中心的像素偏差
+#   2 = 当前「绝对规则」：最大数量/面积/宽度/高度/宽高比/灰度/置信度 全部为绝对阈值
+#       （center_range 已删除）
+RULES_SCHEMA_VERSION = 2
+
+# 语义发生不兼容变化的规则字段：旧值（相对比例/示例偏差）在绝对语义下会误过滤，
+# 例如 area_range=[0.5, 1.5] 会被当成 0.5~1.5 像素²，把目标全部滤掉，因此加载旧
+# 项目时一次性移除（视为未启用），由用户重新按绝对值设置。
+LEGACY_RELATIVE_RULE_KEYS = ("area_range", "width_range", "height_range",
+                             "aspect_ratio_range", "center_range")
+
+
+def migrate_legacy_rules(rules, schema_version=None):
+    """把旧版（相对语义）规则升级为当前「绝对规则」版本。
+
+    返回 (rules, migrated)：migrated=True 表示确有旧字段被移除，调用方应把结果
+    与 RULES_SCHEMA_VERSION 一起写回项目配置，使文件、内存缓存、规则配置对话框
+    与预测使用的规则保持一致。
+
+    语义未变的字段（conf_threshold / max_instances / gray_range / text / mode）
+    原样保留。
+    """
+    new_rules = dict(rules or {})
+    try:
+        version = int(schema_version or 1)
+    except (TypeError, ValueError):
+        version = 1
+    if version >= RULES_SCHEMA_VERSION:
+        return new_rules, False
+
+    migrated = False
+    for key in LEGACY_RELATIVE_RULE_KEYS:
+        if key in new_rules:
+            new_rules.pop(key, None)
+            migrated = True
+    return new_rules, migrated
+
+
 class ProjectSettingsManager(QObject):
     """
     Manages project-specific settings (from project_info.json).
@@ -14,16 +56,23 @@ class ProjectSettingsManager(QObject):
     - export_format: 导出格式 ('yoloseg', 'yolodet', 'yoloobb', 'coco', 'voc', 'labelme', 'mask', 'sa1b')
     - current_category: 当前选中的类别
     - roi: ROI 区域 [x, y, w, h]
-    - rules: 自动标注规则配置
+    - rules: 自动标注规则配置（全部为**绝对值**规则）
+        - 「启用」由字段是否存在表示（apply_rules 只处理存在的字段），
+          默认只启用 conf_threshold；面积/宽高比等过滤规则默认禁用（不写入
+          默认值，避免 load_project 的深合并把它们补回内存、再被 save() 写回
+          project_info.json，造成对话框/文件/预测三处规则不一致）
         - text: 文本规则
-        - max_instances: 最大实例数
-        - conf_threshold: 置信度阈值
-        - area_range: 面积范围 [min, max]
-        - aspect_ratio_range: 宽高比范围 [min, max]
-        - center_range: 中心位置范围 [min, max]
+        - max_instances: 最大保留数量
+        - conf_threshold: 置信度阈值 (0~1)
+        - area_range: 面积范围 [min, max]，单位：像素²
+        - width_range: 宽度范围 [min, max]，单位：像素
+        - height_range: 高度范围 [min, max]，单位：像素
+        - aspect_ratio_range: 宽高比 W/H 范围 [min, max]
+        - gray_range: 区域平均灰度范围 [min, max] (0~255)
         - mode: 模式 ('reuse', 'grid', 'copy_paste')
     - categories: 类别字典 {id: name}
     - defect_categories: 缺陷类别列表
+    - rules_schema: 规则 schema 版本（见 RULES_SCHEMA_VERSION）
     """
     settings_changed = Signal(str, object)
     project_loaded = Signal(str)
@@ -36,11 +85,7 @@ class ProjectSettingsManager(QObject):
         "roi": None,
         "rules": {
             "text": "",
-            "max_instances": 100,
-            "conf_threshold": 0.6,
-            "area_range": [0.5, 1.5],
-            "aspect_ratio_range": [0.1, 10.0],
-            "center_range": [50.0, 50.0],
+            "conf_threshold": 0.5,
             "mode": "reuse"
         },
         "categories": {},

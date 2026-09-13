@@ -102,15 +102,11 @@ class SmartParameterDialog(BaseDialog):
         aspect_group = self.create_aspect_group()
         scroll_layout.addWidget(aspect_group)
 
-        # 6. 中心点偏差
-        center_group = self.create_center_group()
-        scroll_layout.addWidget(center_group)
-
-        # 7. 灰度范围
+        # 6. 灰度范围
         gray_group = self.create_gray_group()
         scroll_layout.addWidget(gray_group)
 
-        # 8. 最大实例数
+        # 7. 最大实例数
         max_inst_group = self.create_max_instances_group()
         scroll_layout.addWidget(max_inst_group)
 
@@ -165,31 +161,31 @@ class SmartParameterDialog(BaseDialog):
         return group
 
     def create_area_group(self):
-        """创建面积范围控制组"""
-        group = QGroupBox("面积范围 (相对平均面积波动)")
+        """创建面积范围控制组（绝对值，单位：像素²）"""
+        group = QGroupBox("面积范围 (绝对值, 像素²)")
         layout = QVBoxLayout(group)
 
         self.cb_area = CheckBox("启用面积过滤")
         self.cb_area.setChecked(True)
         self.cb_area.stateChanged.connect(self.on_parameter_changed)
 
-        # 最小值 (负向波动)
+        # 最小面积
         min_layout = QHBoxLayout()
-        min_layout.addWidget(CaptionLabel("允许负向波动:"))
+        min_layout.addWidget(CaptionLabel("最小面积:"))
         self.spin_area_min = DoubleSpinBox()
-        self.spin_area_min.setRange(-1.0, -0.01)
-        self.spin_area_min.setSingleStep(0.05)
-        self.spin_area_min.setValue(-0.5)
+        self.spin_area_min.setRange(0, 10000000)
+        self.spin_area_min.setSingleStep(100)
+        self.spin_area_min.setValue(100)
         self.spin_area_min.valueChanged.connect(self.on_parameter_changed)
         min_layout.addWidget(self.spin_area_min)
 
-        # 最大值 (正向波动)
+        # 最大面积
         max_layout = QHBoxLayout()
-        max_layout.addWidget(CaptionLabel("允许正向波动:"))
+        max_layout.addWidget(CaptionLabel("最大面积:"))
         self.spin_area_max = DoubleSpinBox()
-        self.spin_area_max.setRange(0.01, 10.0)
-        self.spin_area_max.setSingleStep(0.1)
-        self.spin_area_max.setValue(1.5)
+        self.spin_area_max.setRange(0, 10000000)
+        self.spin_area_max.setSingleStep(100)
+        self.spin_area_max.setValue(50000)
         self.spin_area_max.valueChanged.connect(self.on_parameter_changed)
         max_layout.addWidget(self.spin_area_max)
 
@@ -200,31 +196,31 @@ class SmartParameterDialog(BaseDialog):
         return group
 
     def create_width_group(self):
-        """创建宽度范围控制组"""
-        group = QGroupBox("宽度范围 (相对平均宽度波动)")
+        """创建宽度范围控制组（绝对值，单位：像素）"""
+        group = QGroupBox("宽度范围 (绝对值, 像素)")
         layout = QVBoxLayout(group)
 
         self.cb_width = CheckBox("启用宽度过滤")
         self.cb_width.setChecked(False)
         self.cb_width.stateChanged.connect(self.on_parameter_changed)
 
-        # 最小值 (负向波动)
+        # 最小宽度
         min_layout = QHBoxLayout()
-        min_layout.addWidget(CaptionLabel("允许负向波动:"))
+        min_layout.addWidget(CaptionLabel("最小宽度:"))
         self.spin_width_min = DoubleSpinBox()
-        self.spin_width_min.setRange(-1.0, -0.01)
-        self.spin_width_min.setSingleStep(0.05)
-        self.spin_width_min.setValue(-0.5)
+        self.spin_width_min.setRange(0, 100000)
+        self.spin_width_min.setSingleStep(1)
+        self.spin_width_min.setValue(10)
         self.spin_width_min.valueChanged.connect(self.on_parameter_changed)
         min_layout.addWidget(self.spin_width_min)
 
-        # 最大值 (正向波动)
+        # 最大宽度
         max_layout = QHBoxLayout()
-        max_layout.addWidget(CaptionLabel("允许正向波动:"))
+        max_layout.addWidget(CaptionLabel("最大宽度:"))
         self.spin_width_max = DoubleSpinBox()
-        self.spin_width_max.setRange(0.01, 10.0)
-        self.spin_width_max.setSingleStep(0.1)
-        self.spin_width_max.setValue(1.5)
+        self.spin_width_max.setRange(0, 100000)
+        self.spin_width_max.setSingleStep(1)
+        self.spin_width_max.setValue(2000)
         self.spin_width_max.valueChanged.connect(self.on_parameter_changed)
         max_layout.addWidget(self.spin_width_max)
 
@@ -235,31 +231,31 @@ class SmartParameterDialog(BaseDialog):
         return group
 
     def create_height_group(self):
-        """创建高度范围控制组"""
-        group = QGroupBox("高度范围 (相对平均高度波动)")
+        """创建高度范围控制组（绝对值，单位：像素）"""
+        group = QGroupBox("高度范围 (绝对值, 像素)")
         layout = QVBoxLayout(group)
 
         self.cb_height = CheckBox("启用高度过滤")
         self.cb_height.setChecked(False)
         self.cb_height.stateChanged.connect(self.on_parameter_changed)
 
-        # 最小值 (负向波动)
+        # 最小高度
         min_layout = QHBoxLayout()
-        min_layout.addWidget(CaptionLabel("允许负向波动:"))
+        min_layout.addWidget(CaptionLabel("最小高度:"))
         self.spin_height_min = DoubleSpinBox()
-        self.spin_height_min.setRange(-1.0, -0.01)
-        self.spin_height_min.setSingleStep(0.05)
-        self.spin_height_min.setValue(-0.5)
+        self.spin_height_min.setRange(0, 100000)
+        self.spin_height_min.setSingleStep(1)
+        self.spin_height_min.setValue(10)
         self.spin_height_min.valueChanged.connect(self.on_parameter_changed)
         min_layout.addWidget(self.spin_height_min)
 
-        # 最大值 (正向波动)
+        # 最大高度
         max_layout = QHBoxLayout()
-        max_layout.addWidget(CaptionLabel("允许正向波动:"))
+        max_layout.addWidget(CaptionLabel("最大高度:"))
         self.spin_height_max = DoubleSpinBox()
-        self.spin_height_max.setRange(0.01, 10.0)
-        self.spin_height_max.setSingleStep(0.1)
-        self.spin_height_max.setValue(1.5)
+        self.spin_height_max.setRange(0, 100000)
+        self.spin_height_max.setSingleStep(1)
+        self.spin_height_max.setValue(2000)
         self.spin_height_max.valueChanged.connect(self.on_parameter_changed)
         max_layout.addWidget(self.spin_height_max)
 
@@ -270,80 +266,37 @@ class SmartParameterDialog(BaseDialog):
         return group
 
     def create_aspect_group(self):
-        """创建宽高比范围控制组"""
-        group = QGroupBox("宽高比范围 (相对平均比例波动)")
+        """创建宽高比范围控制组（绝对值，W/H）"""
+        group = QGroupBox("宽高比范围 (绝对值, W/H)")
         layout = QVBoxLayout(group)
 
         self.cb_aspect = CheckBox("启用宽高比过滤")
         self.cb_aspect.setChecked(True)
         self.cb_aspect.stateChanged.connect(self.on_parameter_changed)
 
-        # 最小值 (负向波动)
+        # 最小宽高比
         min_layout = QHBoxLayout()
-        min_layout.addWidget(CaptionLabel("允许负向波动:"))
+        min_layout.addWidget(CaptionLabel("最小宽高比:"))
         self.spin_aspect_min = DoubleSpinBox()
-        self.spin_aspect_min.setRange(-1.0, -0.01)
+        self.spin_aspect_min.setRange(0.0, 1000.0)
         self.spin_aspect_min.setSingleStep(0.05)
-        self.spin_aspect_min.setValue(-0.5)
+        self.spin_aspect_min.setValue(0.1)
         self.spin_aspect_min.valueChanged.connect(self.on_parameter_changed)
         min_layout.addWidget(self.spin_aspect_min)
 
-        # 最大值 (正向波动)
+        # 最大宽高比
         max_layout = QHBoxLayout()
-        max_layout.addWidget(CaptionLabel("允许正向波动:"))
+        max_layout.addWidget(CaptionLabel("最大宽高比:"))
         self.spin_aspect_max = DoubleSpinBox()
-        self.spin_aspect_max.setRange(0.01, 10.0)
+        self.spin_aspect_max.setRange(0.0, 1000.0)
         self.spin_aspect_max.setSingleStep(0.1)
-        self.spin_aspect_max.setValue(2.0)
+        self.spin_aspect_max.setValue(10.0)
         self.spin_aspect_max.valueChanged.connect(self.on_parameter_changed)
         max_layout.addWidget(self.spin_aspect_max)
 
         layout.addWidget(self.cb_aspect)
         layout.addLayout(min_layout)
         layout.addLayout(max_layout)
-
-        return group
-
-    def create_center_group(self):
-        """创建中心点偏差控制组"""
-        group = QGroupBox("中心点偏差范围 (px)")
-        layout = QVBoxLayout(group)
-
-        self.cb_center = CheckBox("启用中心点偏差过滤")
-        self.cb_center.setChecked(True)
-        self.cb_center.stateChanged.connect(self.on_parameter_changed)
-
-        # X轴偏差
-        x_layout = QHBoxLayout()
-        x_layout.addWidget(CaptionLabel("X轴最大偏差:"))
-        self.slider_center_x = Slider(Qt.Orientation.Horizontal)
-        self.slider_center_x.setRange(0, 500)
-        self.slider_center_x.setValue(100)
-        self.slider_center_x.valueChanged.connect(self.on_parameter_changed)
-        self.label_center_x = CaptionLabel("100 px")
-        self.slider_center_x.valueChanged.connect(
-            lambda v: self.label_center_x.setText(f"{v} px")
-        )
-        x_layout.addWidget(self.slider_center_x)
-        x_layout.addWidget(self.label_center_x)
-
-        # Y轴偏差
-        y_layout = QHBoxLayout()
-        y_layout.addWidget(CaptionLabel("Y轴最大偏差:"))
-        self.slider_center_y = Slider(Qt.Orientation.Horizontal)
-        self.slider_center_y.setRange(0, 500)
-        self.slider_center_y.setValue(100)
-        self.slider_center_y.valueChanged.connect(self.on_parameter_changed)
-        self.label_center_y = CaptionLabel("100 px")
-        self.slider_center_y.valueChanged.connect(
-            lambda v: self.label_center_y.setText(f"{v} px")
-        )
-        y_layout.addWidget(self.slider_center_y)
-        y_layout.addWidget(self.label_center_y)
-
-        layout.addWidget(self.cb_center)
-        layout.addLayout(x_layout)
-        layout.addLayout(y_layout)
 
         return group
 
@@ -424,24 +377,20 @@ class SmartParameterDialog(BaseDialog):
         layout.addLayout(header_layout)
 
         # 2. 详细指标面板
-        self.info_group = QGroupBox("数据指标与参考值 (波动值 = |当前-参考|/参考)")
+        self.info_group = QGroupBox("数据指标与参考值")
         info_layout = QVBoxLayout(self.info_group)
 
         # 使用表格或网格布局显示详细信息
         stats_grid = QHBoxLayout()
 
         # 面积列
-        self.area_stats_label = CaptionLabel("面积: -\n波动: -")
+        self.area_stats_label = CaptionLabel("面积: -")
         # 宽高比列
-        self.aspect_stats_label = CaptionLabel("宽高比: -\n波动: -")
-        # 中心点列
-        self.center_stats_label = CaptionLabel("中心点: -\n偏移: -")
+        self.aspect_stats_label = CaptionLabel("宽高比: -")
 
         stats_grid.addWidget(self.area_stats_label)
         stats_grid.addSpacing(20)
         stats_grid.addWidget(self.aspect_stats_label)
-        stats_grid.addSpacing(20)
-        stats_grid.addWidget(self.center_stats_label)
         stats_grid.addStretch(1)
 
         # 参考值显示
@@ -489,46 +438,39 @@ class SmartParameterDialog(BaseDialog):
         self.apply_current_rules()
 
     def get_current_rules(self):
-        """获取当前规则"""
+        """获取当前规则（全部为绝对值规则）"""
         rules = {}
 
         # 置信度
         if self.cb_conf.isChecked():
             rules['conf_threshold'] = self.slider_conf.value() / 100.0
 
-        # 面积范围
+        # 面积范围（像素²）
         if self.cb_area.isChecked():
             rules['area_range'] = [
-                abs(self.spin_area_min.value()), # 转为正数供后端逻辑使用
+                self.spin_area_min.value(),
                 self.spin_area_max.value()
             ]
 
-        # 宽度范围
+        # 宽度范围（像素）
         if self.cb_width.isChecked():
             rules['width_range'] = [
-                abs(self.spin_width_min.value()),
+                self.spin_width_min.value(),
                 self.spin_width_max.value()
             ]
 
-        # 高度范围
+        # 高度范围（像素）
         if self.cb_height.isChecked():
             rules['height_range'] = [
-                abs(self.spin_height_min.value()),
+                self.spin_height_min.value(),
                 self.spin_height_max.value()
             ]
 
-        # 宽高比范围
+        # 宽高比范围（绝对值）
         if self.cb_aspect.isChecked():
             rules['aspect_ratio_range'] = [
-                abs(self.spin_aspect_min.value()), # 转为正数供后端逻辑使用
+                self.spin_aspect_min.value(),
                 self.spin_aspect_max.value()
-            ]
-
-        # 中心点偏差
-        if self.cb_center.isChecked():
-            rules['center_range'] = [
-                float(self.slider_center_x.value()), # 直接传像素值
-                float(self.slider_center_y.value())
             ]
 
         # 灰度范围
@@ -583,30 +525,25 @@ class SmartParameterDialog(BaseDialog):
             print(f"[SmartParameterDialog] 应用规则时出错: {e}")
 
     def _update_detailed_statistics(self):
-        """计算并更新详细统计指标和波动值"""
-        # 1. 显示参考值
+        """计算并更新详细统计指标（绝对值规则下仅显示实际指标与示例参考值）"""
+        # 1. 显示参考值（来自示例统计，仅作参考，过滤本身为绝对阈值）
         ref_area = self.support_info.get('avg_area', 0)
         ref_width = self.support_info.get('avg_width', 0)
         ref_height = self.support_info.get('avg_height', 0)
         ref_aspect = self.support_info.get('avg_aspect_ratio', 0)
-        ref_cx = self.support_info.get('avg_center_x', 0)
-        ref_cy = self.support_info.get('avg_center_y', 0)
 
         self.reference_label.setText(
-            f"参考值: 面积={ref_area:.1f}, 宽={ref_width:.1f}, 高={ref_height:.1f}, 宽高比={ref_aspect:.2f}, 中心=({ref_cx:.1f}, {ref_cy:.1f})"
+            f"示例参考值: 面积={ref_area:.1f}, 宽={ref_width:.1f}, 高={ref_height:.1f}, 宽高比={ref_aspect:.2f}"
         )
 
         if not self.current_instances:
-            self.area_stats_label.setText("面积: -\n波动: -")
-            self.aspect_stats_label.setText("宽高比: -\n波动: -")
-            self.center_stats_label.setText("中心点: -\n偏移: -")
+            self.area_stats_label.setText("面积: -")
+            self.aspect_stats_label.setText("宽高比: -")
             return
 
         # 2. 计算当前指标
         areas = []
         aspects = []
-        centers_x = []
-        centers_y = []
 
         for inst in self.current_instances:
             # 面积 (优先使用之前计算出的 _calc_area，如果已经被清理则重新计算)
@@ -622,56 +559,13 @@ class SmartParameterDialog(BaseDialog):
                 x, y, w, h = inst['bbox']
                 if h > 0:
                     aspects.append(w / h)
-                    centers_x.append(x + w / 2)
-                    centers_y.append(y + h / 2)
 
         # 3. 更新 UI 显示
-        # 面积统计
         if areas:
-            cur_avg_area = np.mean(areas)
-            # 计算带正负号的波动值
-            area_fluct = (cur_avg_area - ref_area) / ref_area if ref_area > 0 else 0
-            # 格式化显示，如果是正数显示 + 号
-            fluct_str = f"{area_fluct*100:+.1f}%"
-            self.area_stats_label.setText(f"平均面积: {cur_avg_area:.1f}\n波动: {fluct_str}")
+            self.area_stats_label.setText(f"平均面积: {np.mean(areas):.1f}")
 
-            if abs(area_fluct) > 0.2: # 绝对值波动超过20%标红
-                self.area_stats_label.setStyleSheet("color: #ff4d4f;")
-            else:
-                self.area_stats_label.setStyleSheet("")
-
-        # 宽高比统计
         if aspects:
-            cur_avg_aspect = np.mean(aspects)
-            # 计算带正负号的波动值
-            aspect_fluct = (cur_avg_aspect - ref_aspect) / ref_aspect if ref_aspect > 0 else 0
-            fluct_str = f"{aspect_fluct*100:+.1f}%"
-            self.aspect_stats_label.setText(f"平均宽高比: {cur_avg_aspect:.2f}\n波动: {fluct_str}")
-
-            if abs(aspect_fluct) > 0.2:
-                self.aspect_stats_label.setStyleSheet("color: #ff4d4f;")
-            else:
-                self.aspect_stats_label.setStyleSheet("")
-
-        # 中心点统计
-        if centers_x:
-            cur_cx = np.mean(centers_x)
-            cur_cy = np.mean(centers_y)
-            # 计算 X/Y 轴分别的偏移
-            dx = cur_cx - ref_cx
-            dy = cur_cy - ref_cy
-            # 计算欧氏距离总偏移
-            offset = np.sqrt(dx**2 + dy**2)
-
-            self.center_stats_label.setText(
-                f"平均中心: ({cur_cx:.1f}, {cur_cy:.1f})\n"
-                f"偏移: {offset:.1f} px (ΔX:{dx:+.1f}, ΔY:{dy:+.1f})"
-            )
-
-            if offset > 50: # 偏移超过50像素标黄
-                self.center_stats_label.setStyleSheet("color: #faad14;")
-            else:
-                self.center_stats_label.setStyleSheet("")
+            self.aspect_stats_label.setText(f"平均宽高比: {np.mean(aspects):.2f}")
 
     def update_preview(self):
         """更新预览图像"""
@@ -708,35 +602,30 @@ class SmartParameterDialog(BaseDialog):
             print(f"[SmartParameterDialog] 更新预览时出错: {e}")
 
     def reset_parameters(self):
-        """重置参数到默认值"""
+        """重置参数到默认值（绝对值规则）"""
         # 置信度
         self.slider_conf.setValue(50)
         self.cb_conf.setChecked(True)
 
-        # 面积范围
-        self.spin_area_min.setValue(-0.5)
-        self.spin_area_max.setValue(1.5)
+        # 面积范围（像素²）
+        self.spin_area_min.setValue(100)
+        self.spin_area_max.setValue(50000)
         self.cb_area.setChecked(True)
 
-        # 宽度范围
-        self.spin_width_min.setValue(-0.5)
-        self.spin_width_max.setValue(1.5)
+        # 宽度范围（像素）
+        self.spin_width_min.setValue(10)
+        self.spin_width_max.setValue(2000)
         self.cb_width.setChecked(False)
 
-        # 高度范围
-        self.spin_height_min.setValue(-0.5)
-        self.spin_height_max.setValue(1.5)
+        # 高度范围（像素）
+        self.spin_height_min.setValue(10)
+        self.spin_height_max.setValue(2000)
         self.cb_height.setChecked(False)
 
-        # 宽高比范围
-        self.spin_aspect_min.setValue(-0.5)
-        self.spin_aspect_max.setValue(2.0)
+        # 宽高比范围（W/H）
+        self.spin_aspect_min.setValue(0.1)
+        self.spin_aspect_max.setValue(10.0)
         self.cb_aspect.setChecked(True)
-
-        # 中心点偏差
-        self.slider_center_x.setValue(20)
-        self.slider_center_y.setValue(20)
-        self.cb_center.setChecked(True)
 
         # 灰度范围
         self.slider_gray_min.setValue(0)

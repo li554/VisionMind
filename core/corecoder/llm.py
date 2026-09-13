@@ -10,7 +10,9 @@ single unified interface. Set CORECODER_PROVIDER=litellm.
 """
 
 import json
+import os
 import time
+import uuid
 from dataclasses import dataclass, field
 
 from openai import OpenAI, APIError, BadRequestError, RateLimitError, APITimeoutError, APIConnectionError
@@ -93,10 +95,32 @@ class LLM:
         # 平台存的是完整 chat.completions 端点,SDK 会自己拼路径,先归一化
         if base_url and base_url.rstrip("/").endswith("/chat/completions"):
             base_url = base_url.rstrip("/")[: -len("/chat/completions")]
-        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        # opencode-go 中转要求两个请求头(非空即可)：
+        #   - X-Opencode-Session: 同一会话固定、跨会话不同(UUID v4),用于 GPU 上下文缓存
+        #   - User-Agent: 需为常见 agent 工具的 UA,默认的 openai-python 会被风险拦截
+        # 仅当 base_url 指向 opencode 时注入,不影响其他 provider。
+        default_headers = None
+        if base_url and self._is_opencode_url(base_url):
+            env_ua = os.environ.get("OPENCODE_USER_AGENT", "").strip()
+            default_headers = {
+                # 每个 LLM 实例(≈每个 agent 会话)一个固定 UUID,多轮复用同值
+                "X-Opencode-Session": str(uuid.uuid4()),
+                "User-Agent": env_ua or "ClaudeCode/1.0.0 (claude-code; command-line)",
+            }
+        self.client = OpenAI(api_key=api_key, base_url=base_url, default_headers=default_headers)
         self.extra = kwargs  # temperature, max_tokens, etc.
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
+
+    @staticmethod
+    def _is_opencode_url(base_url: str) -> bool:
+        """判断 base_url 是否指向 opencode-go 中转(要求 X-Opencode-Session 请求头)。"""
+        host = (base_url or "").lower()
+        # 兼容多种常见 opencode 中转域名形态
+        for marker in ("opencode", "opencode-go"):
+            if marker in host:
+                return True
+        return False
 
     @property
     def estimated_cost(self) -> float | None:
