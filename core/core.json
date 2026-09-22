@@ -29,7 +29,7 @@
       "sam3_radio",
       "yoloe-26x"
     ],
-    "default": "trtsam3",
+    "default": "sam3",
     "value": "sam3",
     "description": "选择用于自动标注的AI模型。trtsam3是TensorRT加速版本，速度最快；sam3是标准版本；sam3_radio支持文本引导；yoloe-26x是YOLO系列轻量模型。"
   },
@@ -900,11 +900,11 @@
   },
   {
     "key": "current_project_name",
-    "value": "test_agent_fixture"
+    "value": "demo_shot"
   },
   {
     "key": "output_dir",
-    "value": "D:\\PycharmProjects\\Work\\VisionLeeQT\\projects\\test_agent_fixture"
+    "value": "D:\\PycharmProjects\\Work\\VisionLeeQT\\projects\\demo_shot"
   },
   {
     "key": "ai_api_key",

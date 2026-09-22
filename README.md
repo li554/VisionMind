@@ -26,17 +26,17 @@ VisionMind 是一款 **Agent 驱动的工业级图像标注软件**：内置对�
 
 - 旋转矩形（OBB）
 
-- SAM 交互式分割（点击/框选提示）
+- SAM 交互式分割（点击/框选提示）：SAM / SAM2 / HQ-SAM
 
 ### AI 辅助标注
 
-- 基于 SAM/SAM2/SAM3/HQ-SAM 的交互式分割
+- 示例分割与文本引导分割（示例模型）：SAM3 概念分割、YOLOE-26 / yolo26e 开放词汇分割
 
 - 基于示例的少样本标注（Few-Shot）
 
 - 文本引导标注（Text-Guided）
 
-- YOLOv8/YOLOE 自动检测标注
+- YOLOv8 自动检测标注（普通模型需自行注册）
 
 ### 多格式支持
 
@@ -108,9 +108,9 @@ VisionMind 是一款 **Agent 驱动的工业级图像标注软件**：内置对�
 | -------- | ------------------------------ |
 | UI 框架    | PySide6 (Qt6)                  |
 | 组件库      | QFluentWidgets (Fluent Design) |
-| 交互式分割    | SAM / SAM2 / SAM3 / HQ-SAM     |
-| 检测模型     | YOLOv8 / YOLOE                 |
-| 推理加速     | TensorRT                       |
+| 交互式分割    | SAM / SAM2 / HQ-SAM            |
+| 示例/文本引导分割 | SAM3 / YOLOE-26               |
+| 检测模型     | YOLOv8                          |
 | 模型部署     | ONNX Runtime                   |
 | 大语言模型    | OpenAI 兼容接口（多模型可配）             |
 | Agent 架构 | Tool Call 工具调用 / 意图分析 / 多模态消息  |
@@ -270,7 +270,9 @@ class IPlugin(ABC):
 
 ### AI 辅助标注
 
-- **交互式分割**：在图像上点击目标区域，SAM系列模型自动生成分割掩码
+- **交互式分割**：在图像上点击目标区域，SAM / SAM2 / HQ-SAM 自动生成分割掩码
+
+- **示例分割与文本引导分割**：以示例框或自然语言概念提示，SAM3 / YOLOE-26 分割出全部同类目标
 
 - **少样本标注**：提供示例图像，模型自动学习并标注相似目标
 

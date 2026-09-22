@@ -11,6 +11,7 @@ __pycache__/*
 **/__pycache__/*
 .idea/*
 weights/*
+!weights/README.md
 projects/*
 settings.json
 .trae/*
@@ -27,3 +28,4 @@ core/runs/*
 _test_titlebar.py
 .ppt/*
 /docs/
+blog/*
