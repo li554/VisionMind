@@ -1,0 +1,8 @@
+[
+    {"key": "default_export_format", "title": "默认导出格式", "type": "combo", "options": ["labelme", "yoloseg", "yolodet", "coco", "voc"], "default": "labelme", "value": "labelme",
+     "description": "项目模式下标注数据的默认导出格式。"},
+    {"key": "default_export_task", "title": "默认导出任务", "type": "combo", "options": ["segmentation", "detection"], "default": "segmentation", "value": "segmentation",
+     "description": "项目模式下默认的导出任务类型。"},
+    {"key": "default_split_ratio", "title": "默认划分比例", "type": "string", "default": "8:2:0", "value": "8:2:0",
+     "description": "数据集默认划分比例（训练:验证:测试），如8:2:0。"}
+]

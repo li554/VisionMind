@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>VisionMind Agent</title>
+  <link rel="stylesheet" href="dsh.css" />
+</head>
+<body>
+  <div id="app">
+    <header id="sidebar-head">
+      <span id="session-title" title="新会话">新会话</span>
+      <button id="new-chat-btn" title="新建对话">＋</button>
+    </header>
+    <main id="chat-scroll">
+      <div id="chat">
+        <div id="welcome">
+          <div class="welcome-brand">VisionMind Agent</div>
+          <div class="welcome-desc">我可以帮你完成标注任务、管理项目、<br/>分析数据等各种操作。</div>
+          <div class="quick-grid">
+            <button class="quick-chip" data-prompt="帮我自动标注当前图片">🏷️ 自动标注当前图片</button>
+            <button class="quick-chip" data-prompt="分析数据集质量">📊 分析数据集质量</button>
+            <button class="quick-chip" data-prompt="批量标注前10张图片">⚡ 批量标注前10张</button>
+            <button class="quick-chip" data-prompt="导出标注数据">📤 导出标注数据</button>
+          </div>
+        </div>
+      </div>
+    </main>
+    <button id="jump-bottom" title="回到底部">⌄</button>
+    <footer id="composer">
+      <div class="composer-card">
+        <div id="pending-imgs" class="pending-imgs" hidden></div>
+        <div id="cmd-chip-row" class="cmd-chip-row" hidden>
+          <span id="cmd-chip" class="cmd-chip"></span>
+        </div>
+        <textarea id="input" rows="1" placeholder="给智能体发消息"></textarea>
+        <div class="composer-row">
+          <div class="composer-tools">
+            <button id="attach-btn" class="round-btn" title="附加图片">+</button>
+            <input type="file" id="file-input" accept="image/*" multiple hidden />
+            <button id="history-btn" class="round-btn" title="历史会话">≡</button>
+          </div>
+          <div class="composer-trailing">
+            <span id="ctx-chip" class="ctx-ring" title="上下文用量"></span>
+            <span id="model-badge" class="model-badge" title="切换模型">
+              <span id="model-text"></span><span class="model-chevron"></span>
+            </span>
+            <button id="send-btn" class="send-btn" disabled>↑</button>
+          </div>
+        </div>
+      </div>
+      <div id="session-drawer" class="session-drawer" hidden>
+        <div class="session-drawer-head">
+          <span class="session-drawer-title">会话历史</span>
+          <button id="session-new" class="session-new">＋ 新建会话</button>
+          <button id="session-close" class="session-close" title="关闭">×</button>
+        </div>
+        <div id="session-list" class="session-list"></div>
+      </div>
+      <div id="model-panel" class="model-panel" hidden>
+        <div class="model-panel-head">
+          <button id="model-back" class="model-back" title="返回">←</button>
+          <span class="model-panel-title">选择模型</span>
+        </div>
+        <div id="model-panel-list" class="model-panel-list"></div>
+      </div>
+    </footer>
+  </div>
+  <script src="marked.min.js"></script>
+  <script src="qwebchannel.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

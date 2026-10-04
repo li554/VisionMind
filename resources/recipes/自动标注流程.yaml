@@ -1,0 +1,64 @@
+recipe_name: 自动标注流程
+created_at: '2026-03-11T21:56:00'
+updated_at: '2026-03-11T21:56:00'
+nodes:
+  query_image_input:
+    type: FileInputNode
+    identifier: inputs
+    properties:
+      file_path: frontend/src/resource/recipes/test.jpg
+      loop: false
+      pos:
+        - -500
+        - -150
+  example_image_input:
+    type: FileInputNode
+    identifier: inputs
+    properties:
+      file_path: frontend/src/resource/recipes/test_support.jpg
+      loop: false
+      pos:
+        - -500
+        - 0
+  example_target:
+    type: ExampleTargetNode
+    identifier: inputs
+    properties:
+      preset_name: default
+      box_x: 100
+      box_y: 100
+      box_width: 200
+      box_height: 200
+      pos:
+        - -500
+        - 150
+  auto_annotate:
+    type: AutoAnnotateNode
+    identifier: detection
+    properties:
+      model_type: trtsam3
+      annotation_mode: 基于示例
+      text_prompt: ''
+      confidence: 50
+      output_format: mask
+      pos:
+        - -100
+        - 0
+  result_display:
+    type: ResultDisplayNode
+    identifier: outputs
+    properties:
+      pos:
+        - 200
+        - 0
+connections:
+  - from: query_image_input.Image
+    to: auto_annotate.Image
+  - from: example_image_input.Image
+    to: auto_annotate.Example
+  - from: example_target.TargetBox
+    to: auto_annotate.TargetBox
+  - from: auto_annotate.Image
+    to: result_display.Image
+  - from: auto_annotate.Result
+    to: result_display.Result
